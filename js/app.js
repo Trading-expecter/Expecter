@@ -9,7 +9,7 @@
 
   const state = {
     symbol: 'XAUUSD',
-    tf: (CFG.timeframes && CFG.timeframes.entry) || '5m',
+    tf: (CFG.timeframes && CFG.timeframes.entry) || '15m',
     bars: {},
     ticks: {},
     analysis: null,
@@ -17,7 +17,6 @@
     feedMode: 'off',
     loading: true,
     requestId: 0,
-    renderTimer: null,
     analysisTimer: null,
     lastAnalysisAt: 0,
     signalLog: [],
@@ -32,9 +31,12 @@
         label: 'ESPERAR',
         reason: 'Iniciando...',
         risk: null,
+        sizing: null,
         direction: 0,
         score: 0,
         confidence: 0,
+        smcGrade: null,
+        smcScore: 0,
         at: 0
       },
       pending: {
@@ -75,9 +77,7 @@
     return (s / 100) * 90 * dir;
   }
 
-  function verdictCfg() {
-    return CFG.verdict || {};
-  }
+  function verdictCfg() { return CFG.verdict || {}; }
 
   function resetVerdict() {
     state.verdict.committed = {
@@ -85,9 +85,12 @@
       label: 'ESPERAR',
       reason: 'Reiniciando análisis...',
       risk: null,
+      sizing: null,
       direction: 0,
       score: 0,
       confidence: 0,
+      smcGrade: null,
+      smcScore: 0,
       at: 0
     };
     state.verdict.pending = { state: null, count: 0, firstSeenAt: 0 };
@@ -114,9 +117,12 @@
         label: 'ESPERAR',
         reason: proposed.reason || 'Mercado cerrado.',
         risk: null,
+        sizing: null,
         direction: 0,
         score: proposed.score || 0,
         confidence: 0,
+        smcGrade: proposed.smcGrade || null,
+        smcScore: proposed.smcScore || 0,
         at: now
       };
       v.pending = { state: null, count: 0, firstSeenAt: 0 };
@@ -126,9 +132,12 @@
     if (proposed.state === committed.state) {
       committed.reason = proposed.reason;
       committed.risk = proposed.risk;
+      committed.sizing = proposed.sizing;
       committed.direction = proposed.direction;
       committed.score = proposed.score;
       committed.confidence = proposed.confidence;
+      committed.smcGrade = proposed.smcGrade;
+      committed.smcScore = proposed.smcScore;
       v.pending = { state: null, count: 0, firstSeenAt: 0 };
       return;
     }
@@ -154,9 +163,12 @@
         label: proposed.label,
         reason: proposed.reason,
         risk: proposed.risk,
+        sizing: proposed.sizing,
         direction: proposed.direction,
         score: proposed.score,
         confidence: proposed.confidence,
+        smcGrade: proposed.smcGrade || null,
+        smcScore: proposed.smcScore || 0,
         at: now
       };
       v.pending = { state: null, count: 0, firstSeenAt: 0 };
@@ -301,11 +313,24 @@
   function renderVerdict() {
     const badge = $('verdictBadge');
     const reason = $('verdictReason');
+    const sizingEl = $('verdictSizing');
     const c = state.verdict.committed;
 
     badge.textContent = c.label || 'ESPERAR';
     badge.className = 'verdict-badge ' + (c.state || 'wait');
     reason.textContent = c.reason || 'Analizando condiciones...';
+
+    if (sizingEl) {
+      if (c.sizing && (c.state === 'buy' || c.state === 'sell')) {
+        sizingEl.hidden = false;
+        sizingEl.textContent = 'Lotes: ' + c.sizing.lots.toFixed(2) +
+          ' · Riesgo: $' + c.sizing.riskAmount.toFixed(2) +
+          ' (' + c.sizing.riskPct + '%)';
+      } else {
+        sizingEl.hidden = true;
+        sizingEl.textContent = '';
+      }
+    }
   }
 
   function renderSMC() {
@@ -313,6 +338,7 @@
     const scoreEl = $('smcScore');
     const barEl = $('smcBarFill');
     const reasonsEl = $('smcReasons');
+    const seqEl = $('smcSequence');
 
     if (!smc) {
       scoreEl.textContent = '0%';
@@ -320,11 +346,12 @@
       barEl.style.width = '0%';
       barEl.style.backgroundColor = 'var(--accent)';
       reasonsEl.innerHTML = '<li class="muted">Escaneando bloques institucionales...</li>';
+      if (seqEl) { seqEl.hidden = true; seqEl.textContent = ''; }
       return;
     }
 
     scoreEl.textContent = smc.score.toFixed(0) + '%';
-    barEl.style.width = smc.score + '%';
+    barEl.style.width = Math.max(0, Math.min(100, smc.score)) + '%';
 
     if (smc.score >= 70) {
       barEl.style.backgroundColor = 'var(--up)';
@@ -339,10 +366,10 @@
 
     const lines = [];
     const bd = smc.breakdown || {};
-    const order = ['mss', 'sweep', 'fvg', 'ob', 'ote', 'penalty', 'vetoed'];
+    const order = ['sequence', 'mss', 'sweep', 'fvg', 'ob', 'ote', 'penalty', 'vetoed'];
     const names = {
-      mss: 'Estructura', sweep: 'Sweep', fvg: 'FVG', ob: 'Order Block',
-      ote: 'OTE', penalty: 'Penalización', vetoed: 'Veto'
+      sequence: 'Secuencia', mss: 'Estructura', sweep: 'Sweep', fvg: 'FVG',
+      ob: 'Order Block', ote: 'OTE', penalty: 'Penalización', vetoed: 'Veto'
     };
 
     order.forEach(function (key) {
@@ -357,6 +384,16 @@
     if (lines.length === 0) lines.push('<li class="muted">Sin componentes de alta probabilidad.</li>');
 
     reasonsEl.innerHTML = lines.join('');
+
+    if (seqEl) {
+      if (smc.sequence && smc.sequence.valid) {
+        seqEl.hidden = false;
+        seqEl.textContent = 'Secuencia institucional: Sweep → MSS → Zona';
+      } else {
+        seqEl.hidden = true;
+        seqEl.textContent = '';
+      }
+    }
   }
 
   function renderAlerts() {
@@ -410,7 +447,7 @@
   function renderMtf() {
     const a = state.analysis;
     const box = $('mtf');
-    const allTfs = CFG.timeframes.list || ['5m', '15m', '1h', '4h'];
+    const allTfs = CFG.timeframes.list || ['5m', '15m', '1h'];
     const optional = CFG.timeframes.optional || [];
 
     if (box.children.length !== allTfs.length) {
@@ -452,6 +489,7 @@
   function renderConclusion() {
     const a = state.analysis;
     const el = $('conclusionText');
+    if (!el) return;
     if (!a) {
       el.textContent = 'Escaneando el mercado en busca de entradas perfectas...';
       return;
@@ -512,10 +550,12 @@
       stopPrice: c.risk.stop,
       targetPrice: c.risk.target,
       rr: c.risk.rr,
+      lots: c.sizing ? c.sizing.lots : null,
+      riskAmount: c.sizing ? c.sizing.riskAmount : null,
       score: c.score,
       confidence: c.confidence,
-      smcGrade: state.analysis ? state.analysis.smcGrade : null,
-      smcScore: state.analysis ? state.analysis.smcScore : null
+      smcGrade: c.smcGrade,
+      smcScore: c.smcScore
     });
     if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
   }
@@ -533,7 +573,7 @@
     const entryTf = res.entryTf || state.tf;
     const entryBarsRaw = state.bars[entryTf];
 
-    if (entryBarsRaw && entryBarsRaw.length > 15) {
+    if (entryBarsRaw && entryBarsRaw.length > 15 && res.overallDirection !== 0) {
       const smcCtx = {
         confidence: res.confidence,
         marketOpen: res.marketOpen,
@@ -545,7 +585,7 @@
       state.smcResult = {
         score: 0,
         label: 'Escaneando',
-        reasons: ['Cargando velas institucionales...'],
+        reasons: ['Sin dirección o historial suficiente.'],
         vetoes: [],
         breakdown: {},
         zones: { ob: null, fvg: null, ote: null },
@@ -553,7 +593,8 @@
         trend: 'Débil',
         vetoed: false,
         grade: null,
-        activeComponents: 0
+        activeComponents: 0,
+        sequence: null
       };
     }
 
@@ -564,15 +605,19 @@
       label: state.analysis.verdictLabel,
       reason: state.analysis.verdictReason,
       risk: state.analysis.verdictRisk,
+      sizing: state.analysis.positionSizing,
       direction: state.analysis.overallDirection,
       score: state.analysis.consensusScore,
       confidence: state.analysis.confidence,
+      smcGrade: state.analysis.smcGrade,
+      smcScore: state.analysis.smcScore,
       marketOpen: state.analysis.marketOpen
     };
 
     const before = state.verdict.committed.state;
+    const beforeAt = state.verdict.committed.at;
     commitVerdict(proposed, now);
-    if (state.verdict.committed.state !== before) {
+    if (state.verdict.committed.state !== before || state.verdict.committed.at !== beforeAt) {
       logSignalIfChanged(now);
     }
 
@@ -580,7 +625,7 @@
   }
 
   function scheduleAnalysis(force) {
-    const throttleMs = (CFG.analysis && CFG.analysis.throttleMs) || 1000;
+    const throttleMs = (CFG.analysis && CFG.analysis.throttleMs) || 1500;
     const elapsed = Date.now() - state.lastAnalysisAt;
 
     if (force) {
@@ -708,6 +753,7 @@
     chart = AT.chart.create(canvas, {
       onHover: function (bar) {
         const el = $('legend');
+        if (!el) return;
         if (!bar) { el.innerHTML = '&nbsp;'; return; }
         const f = function (p) { return fmt(state.symbol, p); };
         const chg = bar.o ? (bar.c - bar.o) / bar.o * 100 : 0;
@@ -716,20 +762,26 @@
       }
     });
 
-    $('zoomIn').addEventListener('click', function () { chart.zoom(0.8); });
-    $('zoomOut').addEventListener('click', function () { chart.zoom(1.25); });
-    $('zoomReset').addEventListener('click', function () { chart.reset(); });
+    const zoomIn = $('zoomIn');
+    const zoomOut = $('zoomOut');
+    const zoomReset = $('zoomReset');
+    const chartFullscreen = $('chartFullscreen');
+    if (zoomIn) zoomIn.addEventListener('click', function () { chart.zoom(0.8); });
+    if (zoomOut) zoomOut.addEventListener('click', function () { chart.zoom(1.25); });
+    if (zoomReset) zoomReset.addEventListener('click', function () { chart.reset(); });
 
-    $('chartFullscreen').addEventListener('click', function () {
-      const chartCard = $('chartCard');
-      if (!document.fullscreenElement) {
-        if (chartCard.requestFullscreen) {
-          chartCard.requestFullscreen().catch(function (err) { console.log('Fullscreen:', err.message); });
+    if (chartFullscreen) {
+      chartFullscreen.addEventListener('click', function () {
+        const chartCard = $('chartCard');
+        if (!document.fullscreenElement) {
+          if (chartCard && chartCard.requestFullscreen) {
+            chartCard.requestFullscreen().catch(function (err) { console.log('Fullscreen:', err.message); });
+          }
+        } else {
+          document.exitFullscreen();
         }
-      } else {
-        document.exitFullscreen();
-      }
-    });
+      });
+    }
 
     document.addEventListener('fullscreenchange', function () {
       updateDrawVisibility();
@@ -743,15 +795,18 @@
     initDrawingMenu();
     initDrawingShortcuts();
 
-    $('mtf').addEventListener('click', function (e) {
-      const b = e.target.closest('button[data-tf]');
-      if (!b) return;
-      state.tf = b.dataset.tf;
-      resetVerdict();
-      renderMtf();
-      renderChart();
-      scheduleAnalysis(true);
-    });
+    const mtf = $('mtf');
+    if (mtf) {
+      mtf.addEventListener('click', function (e) {
+        const b = e.target.closest('button[data-tf]');
+        if (!b) return;
+        state.tf = b.dataset.tf;
+        resetVerdict();
+        renderMtf();
+        renderChart();
+        scheduleAnalysis(true);
+      });
+    }
   }
 
   function isFullscreen() {

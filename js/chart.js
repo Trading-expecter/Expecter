@@ -17,6 +17,7 @@
 
   function cfg() { return (window.AT_CONFIG && window.AT_CONFIG.chart) || {}; }
   function drawCfg() { return (window.AT_CONFIG && window.AT_CONFIG.drawing) || {}; }
+  function vwapCfg() { return (window.AT_CONFIG && window.AT_CONFIG.vwap) || {}; }
 
   function emaPeriods() {
     const p = cfg().emaPeriods;
@@ -81,6 +82,8 @@
       resizeTimer: null,
       emas: [],
       emasMeta: { lastLen: 0, firstT: 0, lastC: NaN },
+      vwapArr: [],
+      vwapMeta: { lastLen: 0, lastC: NaN, sessionKey: null },
       zones: emptyZones(),
       tool: 'cursor',
       drawings: [],
@@ -376,6 +379,11 @@
       return out;
     }
 
+    function computeVwap(bars) {
+      if (vwapCfg().enabled !== true) return [];
+      return I.vwap(bars, vwapCfg().resetHourUtc != null ? vwapCfg().resetHourUtc : 0);
+    }
+
     function setData(bars, o) {
       o = o || {};
       const prevLen = st.emasMeta.lastLen;
@@ -405,23 +413,28 @@
 
       if (identityChanged || prevLen === 0 || newLen < prevLen || emasLenMismatch) {
         st.emas = computeEmas(closes);
+        st.vwapArr = computeVwap(st.bars);
         if (scopeChanged || bufferRotated) {
           st.offset = 0;
         }
       } else if (newLen === prevLen) {
         if (prevLen === 1) {
           st.emas = computeEmas(closes);
+          st.vwapArr = computeVwap(st.bars);
         } else if (closes[newLen - 1] !== st.emasMeta.lastC) {
           for (let i = 0; i < periods.length; i++) {
             st.emas[i] = updateLast(st.emas[i], closes, periods[i]);
           }
+          st.vwapArr = computeVwap(st.bars);
         }
       } else if (newLen === prevLen + 1) {
         for (let i = 0; i < periods.length; i++) {
           st.emas[i] = appendLast(st.emas[i], closes, periods[i]);
         }
+        st.vwapArr = computeVwap(st.bars);
       } else {
         st.emas = computeEmas(closes);
+        st.vwapArr = computeVwap(st.bars);
       }
 
       st.emasMeta.lastLen = newLen;
@@ -465,6 +478,13 @@
       addZoneToRange(st.zones.ob, bounds);
       addZoneToRange(st.zones.fvg, bounds);
       addZoneToRange(st.zones.ote, bounds);
+      for (let i = r.start; i < r.end; i++) {
+        const v = st.vwapArr[i];
+        if (v != null && Number.isFinite(v)) {
+          if (v < bounds.lo) bounds.lo = v;
+          if (v > bounds.hi) bounds.hi = v;
+        }
+      }
       if (!Number.isFinite(bounds.lo) || !Number.isFinite(bounds.hi)) {
         bounds.lo = 0;
         bounds.hi = 1;
@@ -585,9 +605,9 @@
         ctx.fillRect(Math.round(x(i) - bodyW / 2), top, bodyW, Math.max(1, bot - top));
       }
 
-      function drawEma(arr, strokeColor) {
+      function drawSeries(arr, strokeColor, width) {
         ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = width || 1.5;
         ctx.beginPath();
         let started = false;
         for (let i = r.start; i < r.end; i++) {
@@ -599,12 +619,16 @@
         ctx.stroke();
       }
 
+      if (vwapCfg().enabled === true && st.vwapArr && st.vwapArr.length) {
+        drawSeries(st.vwapArr, color('vwap', '#eab308'), 1.8);
+      }
+
       const periods = emaPeriods();
       for (let i = 0; i < periods.length; i++) {
         const p = periods[i];
         const arr = st.emas[i];
         if (!arr) continue;
-        drawEma(arr, color('ema' + p, emaFallbackColor(i)));
+        drawSeries(arr, color('ema' + p, emaFallbackColor(i)), 1.5);
       }
 
       for (let i = 0; i < st.drawings.length; i++) {

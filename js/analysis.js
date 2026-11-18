@@ -30,7 +30,7 @@
   }
 
   function biasTfs() {
-    return (cfg().timeframes && cfg().timeframes.bias) || ['15m', '1h'];
+    return (cfg().timeframes && cfg().timeframes.bias) || ['1h'];
   }
 
   function normalizeAdx(adx) {
@@ -42,8 +42,11 @@
   function cleanBars(bars) {
     if (!bars || !bars.length) return bars;
     const useClosed = (cfg().analysis && cfg().analysis.useClosedCandlesOnly) === true;
-    if (useClosed && bars.length > 1) return bars.slice(0, -1);
-    return bars;
+    const sliced = useClosed && bars.length > 1 ? bars.slice(0, -1) : bars.slice();
+    for (let i = 1; i < sliced.length; i++) {
+      if (sliced[i].t <= sliced[i - 1].t) return sliced.slice(0, i);
+    }
+    return sliced;
   }
 
   function getTradingHours(family) {
@@ -95,7 +98,7 @@
   }
 
   function analyzeTimeframe(bars) {
-    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 15;
+    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 30;
     if (!bars || bars.length < minBars) return null;
 
     const closes = bars.map(function (b) { return b.c; });
@@ -107,8 +110,8 @@
     const emaSlowP = rCfg.emaSlow || 21;
     const adxPeriod = rCfg.adxPeriod || 14;
     const returnLb = rCfg.returnLookback || 10;
-    const emaSepMin = rCfg.emaSeparationMinPct || 0.15;
-    const returnMin = rCfg.returnMinPct || 0.05;
+    const emaSepMin = rCfg.emaSeparationMinPct || 0.10;
+    const returnMin = rCfg.returnMinPct || 0.15;
 
     const fast = I.ema(closes, emaFastP);
     const slow = I.ema(closes, emaSlowP);
@@ -131,7 +134,7 @@
       returnPct = ((price - closes[retIdx]) / closes[retIdx]) * 100;
     }
 
-    const adxOk = adxVal >= (rCfg.adxMin || 18);
+    const adxOk = adxVal >= (rCfg.adxMin || 20);
     const emaOk = emaSepPct >= emaSepMin;
     const returnOk = num(returnPct) && Math.abs(returnPct) >= returnMin && ((returnPct > 0) === (direction === 1));
     const regimeValid = adxOk && emaOk && returnOk;
@@ -186,8 +189,8 @@
   function suggestRisk(entry, support, resistance, atr, direction) {
     const riskCfg = cfg().risk || {};
     const stopMult = riskCfg.atrStopMult || 1.2;
-    const targetMult = riskCfg.atrTargetMult || 1.8;
-    const minRR = riskCfg.minRR != null ? riskCfg.minRR : 1.0;
+    const targetMult = riskCfg.atrTargetMult || 2.0;
+    const minRR = riskCfg.minRR != null ? riskCfg.minRR : 1.5;
     if (!num(entry) || !num(atr) || atr <= 0) return null;
 
     let stop, target, risk, reward;
@@ -215,7 +218,29 @@
 
     if (risk <= 0 || reward <= 0) return null;
     const rr = reward / risk;
-    return { stop: stop, target: target, rr: rr, valid: rr >= minRR };
+    return { stop: stop, target: target, rr: rr, risk: risk, reward: reward, valid: rr >= minRR };
+  }
+
+  function positionSize(entry, stop, symbol) {
+    const riskCfg = cfg().risk || {};
+    const inst = (cfg().symbols || {})[symbol] || {};
+    const balance = riskCfg.accountBalance || 10000;
+    const riskPct = riskCfg.maxRiskPct || 0.5;
+    const contract = inst.contract || 100;
+    if (!num(entry) || !num(stop) || !(balance > 0)) return null;
+
+    const stopDist = Math.abs(entry - stop);
+    if (!(stopDist > 0)) return null;
+
+    const riskAmount = balance * (riskPct / 100);
+    const lotSize = riskAmount / (stopDist * contract);
+    return {
+      lots: lotSize,
+      riskAmount: riskAmount,
+      stopDistance: stopDist,
+      balance: balance,
+      riskPct: riskPct
+    };
   }
 
   function detectExhaustion(bars, direction, exCfg) {
@@ -223,7 +248,6 @@
     if (!bars || bars.length < 20) return alerts;
 
     const closes = bars.map(function (b) { return b.c; });
-
     const i = bars.length - 1;
     const rsiPeriod = exCfg.rsiPeriod || 14;
     const rsiArr = I.rsi(closes, rsiPeriod);
@@ -252,22 +276,57 @@
     return last >= avg * 0.8;
   }
 
+  function vwapBias(bars) {
+    const vCfg = cfg().vwap || {};
+    if (vCfg.enabled !== true) return { ok: true, vwap: null, bias: 0 };
+    if (!bars || bars.length < 5) return { ok: true, vwap: null, bias: 0 };
+
+    const arr = I.vwap(bars, vCfg.resetHourUtc != null ? vCfg.resetHourUtc : 0);
+    let vwapVal = null;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (num(arr[i])) { vwapVal = arr[i]; break; }
+    }
+    if (!num(vwapVal) || vwapVal <= 0) return { ok: true, vwap: null, bias: 0 };
+
+    const price = bars[bars.length - 1].c;
+    const biasPct = vCfg.biasFilterPct != null ? vCfg.biasFilterPct : 0.10;
+    const threshold = vwapVal * (biasPct / 100);
+    const diff = price - vwapVal;
+    const bias = Math.abs(diff) < threshold ? 0 : (diff > 0 ? 1 : -1);
+
+    return {
+      ok: true,
+      vwap: vwapVal,
+      bias: bias,
+      distancePct: (diff / vwapVal) * 100,
+      useAsFilter: vCfg.useAsBiasFilter === true
+    };
+  }
+
+  function applyVwapFilter(direction, vwapInfo) {
+    if (direction === 0) return { direction: 0, ok: true };
+    if (!vwapInfo || !vwapInfo.useAsFilter) return { direction: direction, ok: true };
+    if (vwapInfo.bias === 0) return { direction: direction, ok: true };
+    if (direction === vwapInfo.bias) return { direction: direction, ok: true };
+    return { direction: 0, ok: false };
+  }
+
   function applyHigherTfFilter(direction, perTf) {
-    if (direction === 0) return 0;
+    if (direction === 0) return { direction: 0, ok: true };
     const biasList = biasTfs();
     const highTf = biasList[biasList.length - 1];
     const midTf = biasList.length > 1 ? biasList[0] : null;
     const highData = perTf[highTf];
-    if (!highData || !highData.regimeValid) return direction;
+    if (!highData || !highData.regimeValid) return { direction: direction, ok: true };
     const midData = midTf ? perTf[midTf] : null;
 
     if (direction === 1 && highData.direction === -1) {
-      if (!midData || !midData.regimeValid || midData.direction !== 1) return 0;
+      if (!midData || !midData.regimeValid || midData.direction !== 1) return { direction: 0, ok: false };
     }
     if (direction === -1 && highData.direction === 1) {
-      if (!midData || !midData.regimeValid || midData.direction !== -1) return 0;
+      if (!midData || !midData.regimeValid || midData.direction !== -1) return { direction: 0, ok: false };
     }
-    return direction;
+    return { direction: direction, ok: true };
   }
 
   function applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold) {
@@ -294,17 +353,19 @@
       confidence: 0,
       overallDirection: 0,
       rawDirection: 0,
+      previousDirection: 0,
       perTf: {},
       macroTrend: '—',
       macroMomentum: '—',
       macroVolatility: '—',
       avgAdxAligned: 0,
-      avgAdxOpposed: 0,
       alerts: [],
       verdictState: 'wait',
       verdictLabel: 'ESPERAR',
       verdictReason: reason || 'Analizando mercado...',
       verdictRisk: null,
+      positionSizing: null,
+      vwap: null,
       marketOpen: marketOpen || false,
       highLiquidity: false,
       sessionLabel: sessionLabel || SESSION_LABELS.closed,
@@ -312,6 +373,7 @@
       entryTf: null,
       volumeOk: true,
       higherTfOk: true,
+      vwapOk: true,
       conclusion: reason || 'Analizando mercado...'
     };
   }
@@ -328,7 +390,7 @@
     const exitThreshold = consensusCfg.exitThreshold != null ? consensusCfg.exitThreshold : 0.45;
     const atrPeriod = riskCfg.atrPeriod || 14;
 
-    const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '5m';
+    const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '15m';
     const symbol = opts.symbol || 'XAUUSD';
     const previousDirection = opts.previousDirection === 1 || opts.previousDirection === -1
       ? opts.previousDirection
@@ -378,9 +440,9 @@
     const rawDirection = applyHysteresis(buyShare, 0, enterThreshold, exitThreshold);
     let overallDirection = applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold);
 
-    const beforeFilter = overallDirection;
-    overallDirection = applyHigherTfFilter(overallDirection, perTf);
-    const higherTfOk = (beforeFilter === 0) || (overallDirection === beforeFilter);
+    const htResult = applyHigherTfFilter(overallDirection, perTf);
+    overallDirection = htResult.direction;
+    const higherTfOk = htResult.ok;
 
     let sumAllEvidence = 0;
     let sumAgreeEvidence = 0;
@@ -438,12 +500,17 @@
     }
 
     const volumeOk = volumeConfirms(entryBars);
+    const vwapInfo = vwapBias(entryBars);
+    const vwapResult = applyVwapFilter(overallDirection, vwapInfo);
+    overallDirection = vwapResult.direction;
+    const vwapOk = vwapResult.ok;
 
     const currentPrice = entryData ? entryData.price : null;
     const levels = entryData ? findNearestLevels(entryBars, currentPrice, 3) : { support: null, resistance: null };
     const risk = (entryData && overallDirection !== 0)
       ? suggestRisk(currentPrice, levels.support, levels.resistance, atrVal, overallDirection)
       : null;
+    const sizing = (risk && risk.valid) ? positionSize(currentPrice, risk.stop, symbol) : null;
 
     let verdictState = 'wait';
     let verdictLabel = 'ESPERAR';
@@ -452,23 +519,28 @@
     if (!marketState.open) {
       verdictReason = 'Mercado cerrado (' + marketState.family + ').';
     } else if (!entryData) {
-      verdictReason = 'Timeframe de entrada (' + entryTf + ') sin régimen válido. Esperando alineación.';
-    } else if (overallDirection === 0) {
-      verdictReason = previousDirection !== 0
-        ? 'Sin confirmación de giro. Manteniendo dirección previa.'
-        : 'Mercado lateral. Se busca ruptura de estructura.';
-    } else if (!higherTfOk) {
+      verdictReason = 'Timeframe de entrada (' + entryTf + ') sin régimen válido.';
+    } else if (overallDirection === 0 && previousDirection !== 0 && !higherTfOk) {
       verdictReason = 'Señal contra tendencia de mayor timeframe. Esperando confirmación.';
+    } else if (overallDirection === 0 && previousDirection !== 0 && !vwapOk) {
+      verdictReason = 'Señal contra VWAP. Esperando alineación con sesgo institucional.';
+    } else if (overallDirection === 0) {
+      verdictReason = 'Mercado lateral. Se busca ruptura de estructura.';
     } else if (!volumeOk) {
       verdictReason = 'Vela de señal sin volumen suficiente. Esperando confirmación.';
     } else if (!risk) {
       verdictReason = 'Calculando niveles de entrada perfectos...';
     } else if (!risk.valid) {
-      verdictReason = 'R:R ' + risk.rr.toFixed(2) + ':1 muy bajo. Esperando mejor punto.';
+      verdictReason = 'R:R ' + risk.rr.toFixed(2) + ':1 por debajo del mínimo ' + (riskCfg.minRR || 1.5) + ':1.';
     } else {
       verdictState = overallDirection === 1 ? 'buy' : 'sell';
       verdictLabel = overallDirection === 1 ? 'COMPRA' : 'VENTA';
-      verdictReason = 'Entrada: ' + currentPrice.toFixed(2) + ' | SL: ' + risk.stop.toFixed(2) + ' | TP: ' + risk.target.toFixed(2) + ' | R:R ' + risk.rr.toFixed(2);
+      const sizeText = sizing ? ' | Lotes: ' + sizing.lots.toFixed(2) : '';
+      verdictReason = 'Entrada: ' + currentPrice.toFixed(2) +
+        ' | SL: ' + risk.stop.toFixed(2) +
+        ' | TP: ' + risk.target.toFixed(2) +
+        ' | R:R ' + risk.rr.toFixed(2) +
+        sizeText;
     }
 
     const conclusionParts = [];
@@ -497,6 +569,8 @@
       verdictLabel: verdictLabel,
       verdictReason: verdictReason,
       verdictRisk: risk,
+      positionSizing: sizing,
+      vwap: vwapInfo,
       marketOpen: marketState.open,
       highLiquidity: liquidityState.overlap,
       sessionLabel: sessionLabel,
@@ -504,6 +578,7 @@
       entryTf: entryTf,
       volumeOk: volumeOk,
       higherTfOk: higherTfOk,
+      vwapOk: vwapOk,
       conclusion: conclusionParts.join(' ')
     };
   }
@@ -515,6 +590,7 @@
     result.smcGrade = smc.grade || null;
     result.smcLabel = smc.label || null;
     result.smcVetoed = smc.vetoed === true;
+    result.smcSequence = smc.sequence || null;
 
     if (smc.vetoed === true) {
       result.confidence = 0;
@@ -535,7 +611,8 @@
     }
 
     if (result.conclusion && result.smcGrade) {
-      result.conclusion += ' SMC: ' + result.smcGrade + ' (' + result.smcScore.toFixed(0) + '%).';
+      const seq = smc.sequence && smc.sequence.valid ? ' [secuencia OK]' : '';
+      result.conclusion += ' SMC: ' + result.smcGrade + ' (' + result.smcScore.toFixed(0) + '%)' + seq + '.';
     }
 
     return result;

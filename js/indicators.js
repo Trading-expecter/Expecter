@@ -4,9 +4,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function nulls(n) {
-    return new Array(n).fill(null);
-  }
+  function nulls(n) { return new Array(n).fill(null); }
 
   function firstValid(values, from) {
     const start = from || 0;
@@ -17,9 +15,7 @@
     return -1;
   }
 
-  function last(values, k) {
-    return values[values.length - 1 - (k || 0)];
-  }
+  function last(values, k) { return values[values.length - 1 - (k || 0)]; }
 
   function seedSum(values, start, period) {
     let sum = 0;
@@ -76,10 +72,7 @@
         out[start + period - 1] = prev;
         for (let i = start + period; i < n; i++) {
           const v = values[i];
-          if (v == null || !Number.isFinite(v)) {
-            out[i] = null;
-            continue;
-          }
+          if (v == null || !Number.isFinite(v)) { out[i] = null; continue; }
           prev = alpha * v + (1 - alpha) * prev;
           out[i] = prev;
         }
@@ -90,13 +83,8 @@
     return out;
   }
 
-  function ema(values, period) {
-    return smooth(values, period, 2 / (period + 1));
-  }
-
-  function rma(values, period) {
-    return smooth(values, period, 1 / period);
-  }
+  function ema(values, period) { return smooth(values, period, 2 / (period + 1)); }
+  function rma(values, period) { return smooth(values, period, 1 / period); }
 
   function updateEma(previous, value, period) {
     if (previous == null || !Number.isFinite(previous)) return value;
@@ -209,6 +197,36 @@
     };
   }
 
+  function vwap(bars, resetHourUtc) {
+    const n = bars.length;
+    const out = nulls(n);
+    if (!n) return out;
+    const resetHour = resetHourUtc != null ? resetHourUtc : 0;
+
+    let cumPV = 0;
+    let cumV = 0;
+    let currentSession = null;
+
+    for (let i = 0; i < n; i++) {
+      const b = bars[i];
+      const d = new Date(b.t);
+      const sessionKey = Math.floor((b.t - resetHour * 3600000) / 86400000);
+
+      if (sessionKey !== currentSession) {
+        cumPV = 0;
+        cumV = 0;
+        currentSession = sessionKey;
+      }
+
+      const tp = (b.h + b.l + b.c) / 3;
+      const vol = Number.isFinite(b.v) && b.v > 0 ? b.v : 0;
+      cumPV += tp * vol;
+      cumV += vol;
+      out[i] = cumV > 0 ? cumPV / cumV : null;
+    }
+    return out;
+  }
+
   return {
     nulls: nulls,
     firstValid: firstValid,
@@ -221,6 +239,7 @@
     tr: tr,
     atr: atr,
     rsi: rsi,
-    adx: adx
+    adx: adx,
+    vwap: vwap
   };
 }));

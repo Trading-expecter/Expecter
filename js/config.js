@@ -1,15 +1,15 @@
 window.AT_CONFIG = {
-  version: '3.2.0-SCALP-AUDIT',
+  version: '4.0.0-SMC-FUSION',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
   symbols: {
     XAUUSD: { name: 'Oro / Dólar', digits: 2, contract: 100, spread: 0.30, family: 'metals', enabled: true },
-    XAGUSD: { name: 'Plata / Dólar', digits: 3, contract: 5000, spread: 0.03, family: 'metals', enabled: true },
-    XAUEUR: { name: 'Oro / Euro', digits: 2, contract: 100, spread: 0.40, family: 'metals', enabled: true },
-    EURUSD: { name: 'Euro / Dólar', digits: 5, contract: 100000, spread: 0.00010, family: 'forex', enabled: true },
-    BNBUSD: { name: 'BNB / Dólar', digits: 2, contract: 1, spread: 0.30, family: 'crypto', enabled: true },
-    BTCUSD: { name: 'Bitcoin / Dólar', digits: 2, contract: 1, spread: 0.60, family: 'crypto', enabled: true }
+    XAGUSD: { name: 'Plata / Dólar', digits: 3, contract: 5000, spread: 0.03, family: 'metals', enabled: false },
+    XAUEUR: { name: 'Oro / Euro', digits: 2, contract: 100, spread: 0.40, family: 'metals', enabled: false },
+    EURUSD: { name: 'Euro / Dólar', digits: 5, contract: 100000, spread: 0.00010, family: 'forex', enabled: false },
+    BNBUSD: { name: 'BNB / Dólar', digits: 2, contract: 1, spread: 0.30, family: 'crypto', enabled: false },
+    BTCUSD: { name: 'Bitcoin / Dólar', digits: 2, contract: 1, spread: 0.60, family: 'crypto', enabled: false }
   },
 
   alias: {
@@ -22,45 +22,53 @@ window.AT_CONFIG = {
   },
 
   timeframes: {
-    entry: '5m',
-    list: ['1m', '5m', '15m', '1h'],
-    bias: ['15m', '1h'],
-    weights: { '1m': 1, '5m': 2, '15m': 3, '1h': 4 }
+    entry: '15m',
+    list: ['5m', '15m', '1h'],
+    bias: ['1h'],
+    weights: { '5m': 1, '15m': 3, '1h': 4 }
   },
 
   regime: {
     adxPeriod: 14,
-    adxMin: 18,
+    adxMin: 20,
     adxStrong: 25,
     emaFast: 9,
     emaSlow: 21,
-    emaSeparationMinPct: 0.15,
+    emaSeparationMinPct: 0.10,
     returnLookback: 10,
-    returnMinPct: 0.05
+    returnMinPct: 0.15
   },
 
   consensus: {
     minimumValidTfs: 2,
-    weightedMajority: 0.50,
-    thresholds: { strong: 60, moderate: 40 },
+    enterThreshold: 0.60,
+    exitThreshold: 0.45,
+    weightedMajority: 0.60,
     adxNormalizationCeiling: 40,
-    tieBreak: 'higher_tf'
+    thresholds: { strong: 60, moderate: 40 }
+  },
+
+  verdict: {
+    minHoldMs: 45000,
+    minConfirmations: 2,
+    minPendingMs: 5000
   },
 
   risk: {
     atrPeriod: 14,
     atrStopMult: 1.2,
-    atrTargetMult: 1.8,
-    minRR: 1.2,
-    maxRiskPct: 1.0,
-    maxSignalAgeBars: 5
+    atrTargetMult: 2.0,
+    minRR: 1.5,
+    maxRiskPct: 0.5,
+    maxSignalAgeBars: 5,
+    accountBalance: 10000
   },
 
   vwap: {
-    enabled: false,
-    sessionResetUtc: 0,
-    deviationPct: 0.15,
-    useAsBiasFilter: false
+    enabled: true,
+    resetHourUtc: 0,
+    biasFilterPct: 0.10,
+    useAsBiasFilter: true
   },
 
   exhaustion: {
@@ -80,17 +88,19 @@ window.AT_CONFIG = {
   smc: {
     atrPeriod: 14,
     pivotLookback: 3,
-    mssWindow: 10,
-    sweepWindow: 3,
+    mssWindow: 12,
+    sweepWindow: 4,
     sweepAtrMult: 0.35,
     sweepMaxAtrMult: 1.8,
     sweepRejectionMin: 0.5,
     obAtrMult: 1.5,
+    obMidlineRatio: 0.5,
     obMaxZones: 3,
     obMaxAgeBars: 150,
     fvgMaxZones: 3,
     fvgMinAtrMult: 0.30,
     fvgMaxAge: 60,
+    fvgMiddleBodyAtrMult: 0.5,
     eqToleranceAtrMult: 0.10,
     oteMin: 0.618,
     oteMax: 0.79,
@@ -99,10 +109,10 @@ window.AT_CONFIG = {
     minSwingAtrMult: 4,
     maxSwingAge: 200,
     weights: { mss: 30, sweep: 25, fvg: 15, ob: 15, ote: 15 },
-    requireZoneForHigh: false,
+    requireZoneForHigh: true,
     highConfluence: 70,
     mediumConfluence: 45,
-    minComponentsForMedium: 1
+    minComponentsForMedium: 2
   },
 
   sessions: {
@@ -132,7 +142,7 @@ window.AT_CONFIG = {
   },
 
   chart: {
-    defaultCount: 100,
+    defaultCount: 150,
     minCount: 20,
     maxCount: 1000,
     emaPeriods: [9, 21, 50],
@@ -146,6 +156,7 @@ window.AT_CONFIG = {
       zoneOB: 'rgba(16, 185, 129, 0.15)',
       zoneFVG: 'rgba(0, 184, 217, 0.15)',
       zoneOTE: 'rgba(168, 85, 247, 0.15)',
+      vwap: '#eab308',
       drawing: '#00b8d9',
       drawingInProgress: 'rgba(34, 211, 238, 0.75)',
       drawingText: 'rgba(230, 237, 243, 0.85)'
@@ -163,8 +174,8 @@ window.AT_CONFIG = {
   },
 
   analysis: {
-    minBarsPerTf: 15,
-    throttleMs: 1000,
+    minBarsPerTf: 30,
+    throttleMs: 1500,
     useClosedCandlesOnly: false
   }
 };

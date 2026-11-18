@@ -6,10 +6,13 @@ window.AT.smcEngine = (function (I) {
   const DEFAULT_HIGH_CONFLUENCE = 70;
   const DEFAULT_MEDIUM_CONFLUENCE = 45;
   const DEFAULT_MIN_CONFIDENCE = 5;
-  const DEFAULT_MIN_COMPONENTS = 1;
+  const DEFAULT_MIN_COMPONENTS = 2;
   const SWEEP_AGAINST_PENALTY = 15;
   const BOS_WEIGHT_FACTOR = 0.5;
   const STALE_MSS_FACTOR = 0.5;
+  const SEQUENCE_BONUS = 15;
+  const SEQUENCE_MAX_AGE_SWEEP = 8;
+  const SEQUENCE_MAX_AGE_MSS = 12;
 
   function cfg() {
     return (window.AT_CONFIG && window.AT_CONFIG.smc) || {};
@@ -50,9 +53,7 @@ window.AT.smcEngine = (function (I) {
     return !!(s && s.requireActive);
   }
 
-  function num(v) {
-    return v != null && Number.isFinite(v);
-  }
+  function num(v) { return v != null && Number.isFinite(v); }
 
   function emptyResult(direction, reason, context) {
     context = context || {};
@@ -68,6 +69,7 @@ window.AT.smcEngine = (function (I) {
       vetoes: [],
       vetoed: false,
       activeComponents: 0,
+      sequence: null,
       context: context
     };
   }
@@ -84,6 +86,43 @@ window.AT.smcEngine = (function (I) {
     return 0;
   }
 
+  function checkSequence(bars, direction, sweeps, structure, obs, fvgs) {
+    if (!sweeps || !sweeps.length) return null;
+    const sweep = sweeps.find(function (s) { return s.direction === direction; });
+    if (!sweep) return null;
+
+    const lastIdx = bars.length - 1;
+    const sweepAge = lastIdx - sweep.index;
+    if (sweepAge > SEQUENCE_MAX_AGE_SWEEP) return null;
+
+    const mss = structure.mss;
+    if (!mss || mss.direction !== direction) return null;
+    if (mss.breakoutIndex == null) return null;
+    if (mss.breakoutIndex <= sweep.index) return null;
+
+    const mssAge = lastIdx - mss.breakoutIndex;
+    if (mssAge > SEQUENCE_MAX_AGE_MSS) return null;
+
+    const validFvg = fvgs.find(function (z) {
+      return z.direction === direction && z.index > sweep.index && z.index >= mss.breakoutIndex - 1;
+    });
+
+    const validOb = obs.find(function (z) {
+      return z.direction === direction && z.index > sweep.index && z.index >= mss.breakoutIndex - 1;
+    });
+
+    if (!validFvg && !validOb) return null;
+
+    return {
+      valid: true,
+      sweepIndex: sweep.index,
+      mssIndex: mss.breakoutIndex,
+      fvgIndex: validFvg ? validFvg.index : null,
+      obIndex: validOb ? validOb.index : null,
+      bonus: SEQUENCE_BONUS
+    };
+  }
+
   function evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w) {
     const result = {
       score: 0,
@@ -96,6 +135,7 @@ window.AT.smcEngine = (function (I) {
       zones: { ob: null, fvg: null, ote: null, allOBs: obs, allFVGs: fvgs },
       vetoes: [],
       vetoed: false,
+      sequence: null,
       context: context
     };
 
@@ -113,7 +153,7 @@ window.AT.smcEngine = (function (I) {
       result.breakdown.mss = {
         value: base,
         weighted: weighted,
-        reason: (mss.type || 'MSS') + ' a favor (velas: ' + mss.barsSince + ')'
+        reason: (mss.type || 'MSS') + ' a favor (velas: ' + mss.barsSince + ', cuerpo: ' + (mss.bodyAtr || 0).toFixed(2) + ' ATR)'
       };
       result.reasons.push('Estructura a favor (' + (mss.type || 'MSS') + ').');
     } else {
@@ -129,7 +169,7 @@ window.AT.smcEngine = (function (I) {
         value: w.sweep,
         weighted: weighted,
         rejectionRatio: rejection,
-        reason: 'Sweep a favor (rechazo ' + (rejection * 100).toFixed(0) + '%)'
+        reason: 'Sweep a favor (rechazo ' + (rejection * 100).toFixed(0) + '%, ' + sweepFavor.barsSince + ' velas)'
       };
       result.reasons.push('Barrido de liquidez a favor.');
     } else {
@@ -154,7 +194,11 @@ window.AT.smcEngine = (function (I) {
       const weighted = w.fvg * strength;
       score += weighted;
       result.zones.fvg = activeFvg;
-      result.breakdown.fvg = { value: w.fvg, weighted: weighted, reason: 'FVG activo' };
+      result.breakdown.fvg = {
+        value: w.fvg,
+        weighted: weighted,
+        reason: 'FVG activo (gap ' + (activeFvg.gapAtr || 0).toFixed(2) + ' ATR)'
+      };
       result.reasons.push('Precio en FVG.');
     } else {
       result.breakdown.fvg = { value: 0, weighted: 0, reason: 'Fuera de FVG' };
@@ -166,7 +210,11 @@ window.AT.smcEngine = (function (I) {
       const weighted = w.ob * strength;
       score += weighted;
       result.zones.ob = activeOb;
-      result.breakdown.ob = { value: w.ob, weighted: weighted, reason: 'OB activo' };
+      result.breakdown.ob = {
+        value: w.ob,
+        weighted: weighted,
+        reason: 'OB activo (desplazamiento ' + (activeOb.displacementAtr || 0).toFixed(2) + ' ATR)'
+      };
       result.reasons.push('Precio en Order Block.');
     } else {
       result.breakdown.ob = { value: 0, weighted: 0, reason: 'Fuera de OB' };
@@ -191,6 +239,18 @@ window.AT.smcEngine = (function (I) {
       result.breakdown.ote = { value: w.ote, weighted: weighted, reason: 'OTE pendiente' };
     } else {
       result.breakdown.ote = { value: 0, weighted: 0, reason: 'Sin OTE' };
+    }
+
+    const sequence = checkSequence(bars, direction, sweeps, structure, obs, fvgs);
+    if (sequence && sequence.valid) {
+      score += sequence.bonus;
+      result.sequence = sequence;
+      result.breakdown.sequence = {
+        value: sequence.bonus,
+        weighted: sequence.bonus,
+        reason: 'Secuencia Sweep → MSS → Zona confirmada'
+      };
+      result.reasons.push('Secuencia institucional confirmada.');
     }
 
     score = Math.max(0, Math.min(100, score));
@@ -311,7 +371,7 @@ window.AT.smcEngine = (function (I) {
     const pivots = structureModule.findPivots(bars);
     const structure = {
       pivots: pivots,
-      mss: structureModule.detectMSS(bars, pivots)
+      mss: structureModule.detectMSS(bars, pivots, { atr: atr })
     };
 
     const sweeps = liquidity.detectSweeps(bars, pivots, atr, { allowBidirectional: true });

@@ -110,6 +110,7 @@
     if (t == null || o == null || h == null || l == null || c == null) return null;
     if (h < l) return null;
     if (o <= 0 || h <= 0 || l <= 0 || c <= 0) return null;
+    if (c > h || c < l || o > h || o < l) return null;
     const v = toNum(raw.tickVolume);
     const vb = toNum(raw.volume);
     const vc = toNum(raw.vol);
@@ -250,11 +251,13 @@
       last.live = false;
       const newBarT = Math.floor(ts / tfMs) * tfMs;
       const openRef = Number.isFinite(last.c) && last.c > 0 ? last.c : price;
+      const newHigh = Math.max(price, openRef);
+      const newLow = Math.min(price, openRef);
       bars.push({
         t: newBarT,
         o: openRef,
-        h: Math.max(price, openRef),
-        l: Math.min(price, openRef),
+        h: newHigh,
+        l: newLow,
         c: price,
         v: vol,
         live: true
