@@ -1,3 +1,9 @@
+/* ============================================================
+ * SMC Signals — Terminal de Confluencia
+ * styles.css  (10/11)  ·  Tema oscuro terminal
+ * Estados de cabecera: is-waiting (gris) / is-armed (ámbar) /
+ * is-buy (verde) / is-sell (rojo)
+ * ============================================================ */
 :root {
   --bg: #0D0D0D;
   --surface: #141414;
@@ -47,6 +53,7 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
 .signal-header.is-waiting { background: var(--surface); border-bottom-color: var(--border); }
 .signal-header.is-buy { background: rgba(0, 212, 170, 0.06); border-bottom-color: var(--buy); }
 .signal-header.is-sell { background: rgba(255, 71, 87, 0.06); border-bottom-color: var(--sell); }
+.signal-header.is-armed { background: rgba(255, 184, 0, 0.07); border-bottom-color: var(--warn); }
 
 .signal-main { display: flex; align-items: center; gap: 16px; }
 .signal-direction { display: flex; align-items: center; gap: 10px; }
@@ -54,9 +61,20 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
 .is-buy .signal-icon { color: var(--buy); }
 .is-sell .signal-icon { color: var(--sell); }
 .is-waiting .signal-icon { color: var(--text-tertiary); }
+.is-armed .signal-icon { color: var(--warn); }
+
 .signal-label { font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
 .is-buy .signal-label { color: var(--buy); }
 .is-sell .signal-label { color: var(--sell); }
+.is-armed .signal-label {
+  color: var(--warn);
+  animation: armed-pulse 1.6s ease-in-out infinite;
+}
+@keyframes armed-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .signal-symbol { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
 
 .signal-levels { display: flex; gap: 22px; font-family: var(--font-mono); }
@@ -81,7 +99,6 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
   padding: 8px 20px; border-bottom: 1px solid var(--border);
   background: var(--bg); flex-wrap: wrap;
 }
-
 .symbol-bar { display: flex; gap: 4px; flex-wrap: wrap; }
 .symbol-btn {
   padding: 6px 10px;
@@ -93,10 +110,7 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
 .symbol-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 
 .mode-bar { display: flex; gap: 2px; background: var(--surface); padding: 3px; border-radius: 6px; border: 1px solid var(--border); }
-.mode-btn {
-  padding: 5px 14px; border-radius: 4px;
-  font-size: 12px; font-weight: 600; color: var(--text-secondary);
-}
+.mode-btn { padding: 5px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .mode-btn:hover { color: var(--text); }
 .mode-btn.active { background: var(--border-hi); color: var(--text); }
 
@@ -107,6 +121,7 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
 .conn-status.live::before { color: var(--buy); }
 .conn-status.polling::before { color: var(--warn); }
 .conn-status.error::before { color: var(--sell); }
+.conn-status.closed::before { color: var(--warn); }
 .conn-status.off::before { color: var(--text-tertiary); }
 
 /* ── ÁREA DE TRABAJO ── */
@@ -114,12 +129,10 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 14px; padding: 14px; max-width: 1600px; margin: 0 auto;
 }
-
 .panel {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 14px; min-width: 0;
 }
-
 .panel-chart { display: flex; flex-direction: column; }
 .chart-toolbar {
   display: flex; justify-content: space-between; align-items: center;
@@ -131,17 +144,19 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
   border: 1px solid var(--border);
 }
 .legend { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
-
 #chart {
   display: block; width: 100%;
   height: clamp(360px, 55vh, 560px);
   background: var(--bg); border-radius: 6px;
   cursor: crosshair;
+  touch-action: none;
 }
 
 /* ── PANEL DE CONFLUENCIA ── */
-.panel-confluence h2 { font-size: 11px; letter-spacing: 0.1em; color: var(--text-tertiary); margin-bottom: 14px; text-transform: uppercase; }
-
+.panel-confluence h2 {
+  font-size: 11px; letter-spacing: 0.1em; color: var(--text-tertiary);
+  margin-bottom: 14px; text-transform: uppercase;
+}
 .confidence-meter { margin-bottom: 18px; }
 .confidence-bar { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
 .confidence-fill {
@@ -151,6 +166,7 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
 .confidence-fill.high { background: var(--buy); }
 .confidence-fill.medium { background: var(--warn); }
 .confidence-fill.low { background: var(--sell); }
+.confidence-fill.armed { background: var(--warn); }
 #confidence-text { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
 
 .checklist { list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
@@ -171,7 +187,10 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
   margin-top: 16px; padding: 10px;
   background: var(--bg); border-radius: 5px; border-left: 3px solid var(--accent);
   font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);
+  white-space: pre-wrap; word-break: break-word;
 }
+.is-armed ~ * .smc-reason, /* sin efecto real, solo informativo */
+.smc-reason.armed { border-left-color: var(--warn); }
 
 /* ── PIE ── */
 .footer {
@@ -195,11 +214,16 @@ button { font: inherit; color: inherit; border: none; background: none; cursor: 
   .signal-header { padding: 10px 14px; gap: 14px; }
   .signal-levels { gap: 16px; }
   .level strong { font-size: 13px; }
+  .signal-label { font-size: 15px; }
   .toolbar { padding: 8px 14px; }
-  .status-area { margin-left: 0; }
+  .status-area { margin-left: 0; width: 100%; }
   .footer { flex-direction: column; align-items: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
