@@ -1,25 +1,65 @@
+/* ============================================================
+ * SMC Signals — Terminal de Confluencia
+ * indicators.js  (2/11)  ·  EMA / RSI / ATR (suavizado Wilder)
+ * ============================================================ */
 window.Indicators = (function () {
+  'use strict';
+
   function nulls(n) { return new Array(n).fill(null); }
 
   function firstValid(arr) {
     for (let i = 0; i < arr.length; i++) {
-      if (arr[i] != null && Number.isFinite(arr[i])) return i;
+      const v = arr[i];
+      if (v != null && Number.isFinite(v)) return i;
     }
     return -1;
+  }
+
+  function lastFinite(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const v = arr[i];
+      if (v != null && Number.isFinite(v)) return v;
+    }
+    return null;
+  }
+
+  function sma(values, period) {
+    const n = values.length;
+    const out = nulls(n);
+    if (period <= 0 || n < period) return out;
+    let sum = 0, count = 0;
+    for (let i = 0; i < n; i++) {
+      const v = values[i];
+      if (v != null && Number.isFinite(v)) { sum += v; count++; }
+      if (i >= period) {
+        const old = values[i - period];
+        if (old != null && Number.isFinite(old)) { sum -= old; count--; }
+      }
+      if (i >= period - 1 && count === period) out[i] = sum / period;
+    }
+    return out;
   }
 
   function ema(values, period) {
     const n = values.length;
     const out = nulls(n);
+    if (period <= 0) return out;
     const start = firstValid(values);
     if (start < 0 || n - start < period) return out;
     const k = 2 / (period + 1);
-    let prev = 0;
-    for (let i = start; i < start + period; i++) prev += values[i];
-    prev /= period;
-    out[start + period - 1] = prev;
-    for (let i = start + period; i < n; i++) {
-      prev = values[i] * k + prev * (1 - k);
+    let seed = 0, seedCount = 0;
+    for (let i = start; seedCount < period && i < n; i++) {
+      const v = values[i];
+      if (v != null && Number.isFinite(v)) { seed += v; seedCount++; }
+    }
+    if (seedCount < period) return out;
+    let prev = seed / period;
+    const seedEnd = start + period - 1;
+    out[seedEnd] = prev;
+    for (let i = seedEnd + 1; i < n; i++) {
+      const v = values[i];
+      if (v == null || !Number.isFinite(v)) { out[i] = prev; continue; }
+      prev = v * k + prev * (1 - k);
       out[i] = prev;
     }
     return out;
@@ -28,15 +68,13 @@ window.Indicators = (function () {
   function rsi(closes, period) {
     const n = closes.length;
     const out = nulls(n);
-    if (n <= period) return out;
+    if (period <= 0 || n <= period) return out;
     let gain = 0, loss = 0;
     for (let i = 1; i <= period; i++) {
       const d = closes[i] - closes[i - 1];
-      if (d >= 0) gain += d;
-      else loss -= d;
+      if (d >= 0) gain += d; else loss -= d;
     }
-    gain /= period;
-    loss /= period;
+    gain /= period; loss /= period;
     out[period] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
     for (let i = period + 1; i < n; i++) {
       const d = closes[i] - closes[i - 1];
@@ -50,8 +88,8 @@ window.Indicators = (function () {
   function atr(highs, lows, closes, period) {
     const n = closes.length;
     const out = nulls(n);
-    if (n <= period) return out;
-    const tr = new Array(n);
+    if (period <= 0 || n <= period) return out;
+    const tr = new Array(n).fill(0);
     tr[0] = highs[0] - lows[0];
     for (let i = 1; i < n; i++) {
       tr[i] = Math.max(
@@ -62,12 +100,14 @@ window.Indicators = (function () {
     }
     let sum = 0;
     for (let i = 1; i <= period; i++) sum += tr[i];
-    out[period] = sum / period;
+    let prev = sum / period;
+    out[period] = prev;
     for (let i = period + 1; i < n; i++) {
-      out[i] = (out[i - 1] * (period - 1) + tr[i]) / period;
+      prev = (prev * (period - 1) + tr[i]) / period;
+      out[i] = prev;
     }
     return out;
   }
 
-  return { ema, rsi, atr };
+  return { ema, rsi, atr, sma, lastFinite };
 })();

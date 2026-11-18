@@ -1,11 +1,18 @@
+/* ============================================================
+ * SMC Signals — Terminal de Confluencia
+ * data.js  (3/11)  ·  Capa de datos (biquote.io REST + SignalR)
+ * Docs: https://biquote.io/docs/
+ * ============================================================ */
 window.Data = (function () {
+  'use strict';
+
   const TF_MS = {
     '1m': 60000, '5m': 300000, '15m': 900000,
     '30m': 1800000, '1h': 3600000, '4h': 14400000, '1d': 86400000
   };
 
-  function base() { return CONFIG.base; }
-  function feedCfg() { return CONFIG.feed; }
+  const base = () => CONFIG.feed.base;
+  const feedCfg = () => CONFIG.feed;
 
   function parseTs(x) {
     if (x == null) return null;
@@ -25,9 +32,11 @@ window.Data = (function () {
     const t = parseTs(raw.openTime);
     const o = num(raw.open), h = num(raw.high), l = num(raw.low), c = num(raw.close);
     if (t == null || o == null || h == null || l == null || c == null) return null;
+    if (h < Math.max(o, c) || l > Math.min(o, c)) return null;
     return { t, o, h, l, c, v: num(raw.tickVolume) || num(raw.volume) || 0, live: !!raw.isOpen };
   }
 
+  // biquote devuelve newest-first: dedupe por openTime y ordena ascendente.
   function normalizeBars(arr) {
     const map = new Map();
     for (const raw of arr) {
@@ -43,12 +52,18 @@ window.Data = (function () {
     try {
       const r = await fetch(base() + path, { signal: ctl.signal, cache: 'no-store' });
       clearTimeout(timer);
+      if (r.status === 429) {
+        const wait = Number(r.headers.get('Retry-After')) || 60;
+        await new Promise(res => setTimeout(res, Math.min(wait, 60) * 1000));
+        if (attempt < feedCfg().maxRetries) return getJSON(path, attempt + 1);
+        throw new Error('Rate limit (429)');
+      }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return await r.json();
     } catch (e) {
       clearTimeout(timer);
       if (attempt < feedCfg().maxRetries && (e.name === 'TypeError' || e.name === 'AbortError')) {
-        await new Promise(res => setTimeout(res, 400 * attempt));
+        await new Promise(res => setTimeout(res, feedCfg().retryBackoffMs * attempt));
         return getJSON(path, attempt + 1);
       }
       throw e;
@@ -56,14 +71,17 @@ window.Data = (function () {
   }
 
   async function fetchBars(symbol, tf, limit = 200) {
-    const path = '/api/' + encodeURIComponent(symbol) + '/ohlc?interval=' + tf + '&limit=' + limit;
+    const path = '/api/' + encodeURIComponent(symbol) +
+      '/ohlc?interval=' + encodeURIComponent(tf) +
+      '&limit=' + Math.min(1000, Math.max(1, limit));
     const d = await getJSON(path);
     const arr = Array.isArray(d) ? d : (d && Array.isArray(d.bars) ? d.bars : []);
     const bars = normalizeBars(arr);
-    if (!bars.length) throw new Error('Sin datos para ' + symbol);
+    if (!bars.length) throw new Error('Sin datos OHLC para ' + symbol + ' ' + tf);
     return bars;
   }
 
+  // 'last' y 'volume' son siempre 0 en MT5/CFD: usar mid (o bid/ask).
   function normTick(raw) {
     if (!raw || !raw.symbol) return null;
     const bid = num(raw.bid), ask = num(raw.ask);
@@ -71,11 +89,30 @@ window.Data = (function () {
     if (!mid || mid <= 0) return null;
     return {
       symbol: String(raw.symbol).toUpperCase(),
+      description: raw.description || '',
       mid, bid: bid || mid, ask: ask || mid,
+      spread: num(raw.spread),
       dayPct: num(raw.dayDiffPercent),
+      direction: raw.direction || 'FLAT',
       state: raw.marketState || 'open',
+      stale: !!raw.stale,
+      quoteAgeSeconds: num(raw.quoteAgeSeconds) || 0,
       ts: parseTs(raw.timestamp) || Date.now()
     };
+  }
+
+  // Batch de ticks (UNA llamada). Devuelve objeto {SYMBOL: tick}.
+  async function fetchLatest(symbols) {
+    const q = symbols.map(s => 'symbols=' + encodeURIComponent(s)).join('&');
+    const d = await getJSON('/api/latest?' + q);
+    const out = {};
+    if (d && typeof d === 'object' && !Array.isArray(d)) {
+      for (const [sym, raw] of Object.entries(d)) {
+        const t = normTick(raw);
+        if (t) out[t.symbol] = t;
+      }
+    }
+    return out;
   }
 
   function applyTick(bars, tfMs, price, ts) {
@@ -86,7 +123,7 @@ window.Data = (function () {
     if (bucket > lastBucket) {
       last.live = false;
       bars.push({ t: bucket, o: price, h: price, l: price, c: price, v: 1, live: true });
-    } else {
+    } else if (bucket === lastBucket) {
       last.live = true;
       last.h = Math.max(last.h, price);
       last.l = Math.min(last.l, price);
@@ -96,28 +133,21 @@ window.Data = (function () {
   }
 
   function createFeed(symbols, handlers) {
-    let conn = null;
-    let pollTimer = null;
-    let mode = 'off';
+    let conn = null, pollTimer = null, mode = 'off', stopped = false;
 
-    function setMode(m) {
-      mode = m;
-      if (handlers.status) handlers.status(m);
+    function setMode(m) { mode = m; if (handlers.status) handlers.status(m); }
+
+    function emitTicks(map) {
+      if (!handlers.tick) return;
+      for (const sym of symbols) { const t = map[sym]; if (t) handlers.tick(t); }
     }
 
     async function poll() {
+      if (stopped) return;
       try {
-        const q = symbols.map(s => 'symbols=' + encodeURIComponent(s)).join('&');
-        const d = await getJSON('/api/latest?' + q);
-        let arr = Array.isArray(d) ? d : (d && Array.isArray(d.ticks) ? d.ticks : []);
-        for (const raw of arr) {
-          const t = normTick(raw);
-          if (t && handlers.tick) handlers.tick(t);
-        }
+        emitTicks(await fetchLatest(symbols));
         if (mode !== 'live') setMode('polling');
-      } catch (e) {
-        if (mode !== 'live') setMode('error');
-      }
+      } catch (e) { if (mode !== 'live') setMode('error'); }
     }
 
     async function startSignalR() {
@@ -127,35 +157,47 @@ window.Data = (function () {
           .withUrl(base() + '/hubs/tick')
           .withAutomaticReconnect()
           .build();
+
         conn.on('ReceiveTick', raw => {
           const t = normTick(raw);
           if (t && handlers.tick) handlers.tick(t);
         });
-        conn.onreconnected(() => conn.invoke('Subscribe', symbols).then(() => setMode('live')));
+
+        // Distingue cerrado / desconocido / muerto.
+        conn.on('ReceiveSubscriptionState', states => {
+          if (handlers.subscriptionState) handlers.subscriptionState(states);
+        });
+
+        conn.onreconnected(() => {
+          if (stopped) return;
+          conn.invoke('Subscribe', symbols).then(() => setMode('live')).catch(() => {});
+        });
+
         await conn.start();
         await conn.invoke('Subscribe', symbols);
         setMode('live');
         return true;
-      } catch (e) {
-        conn = null;
-        return false;
-      }
+      } catch (e) { conn = null; return false; }
     }
 
     return {
-      start() {
+      async start() {
+        stopped = false;
+        try { emitTicks(await fetchLatest(symbols)); } catch (e) {}
         setMode('polling');
         pollTimer = setInterval(poll, feedCfg().pollMs);
         poll();
-        startSignalR();
+        if (feedCfg().preferSignalR) startSignalR();
       },
       stop() {
+        stopped = true;
         if (pollTimer) clearInterval(pollTimer);
-        if (conn) try { conn.stop(); } catch (e) {}
+        pollTimer = null;
+        if (conn) { try { conn.stop(); } catch (e) {} conn = null; }
         setMode('off');
       }
     };
   }
 
-  return { TF: TF_MS, fetchBars, applyTick, createFeed };
+  return { TF: TF_MS, fetchBars, fetchLatest, applyTick, createFeed };
 })();

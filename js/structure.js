@@ -1,11 +1,19 @@
+/* ============================================================
+ * SMC Signals — Terminal de Confluencia
+ * structure.js  (4/11)  ·  Estructura de mercado (BOS / CHoCH)
+ * ============================================================ */
 window.Structure = (function () {
+  'use strict';
+
   function pivots(bars, lookback) {
     const highs = [], lows = [];
-    for (let i = lookback; i < bars.length - lookback; i++) {
+    const lb = Math.max(1, lookback | 0);
+    for (let i = lb; i < bars.length - lb; i++) {
       let isHigh = true, isLow = true;
-      for (let j = 1; j <= lookback; j++) {
+      for (let j = 1; j <= lb; j++) {
         if (bars[i].h <= bars[i - j].h || bars[i].h <= bars[i + j].h) isHigh = false;
         if (bars[i].l >= bars[i - j].l || bars[i].l >= bars[i + j].l) isLow = false;
+        if (!isHigh && !isLow) break;
       }
       if (isHigh) highs.push({ index: i, price: bars[i].h });
       if (isLow) lows.push({ index: i, price: bars[i].l });
@@ -13,37 +21,66 @@ window.Structure = (function () {
     return { highs, lows };
   }
 
+  // 1 = alcista (HH+HL), -1 = bajista (LH+LL), 0 = indefinida
+  function structureTrend(pivots) {
+    const h = pivots.highs, l = pivots.lows;
+    if (h.length < 2 || l.length < 2) return 0;
+    const lastHigh = h[h.length - 1], prevHigh = h[h.length - 2];
+    const lastLow = l[l.length - 1], prevLow = l[l.length - 2];
+    const hh = lastHigh.price > prevHigh.price;
+    const hl = lastLow.price > prevLow.price;
+    const lh = lastHigh.price < prevHigh.price;
+    const ll = lastLow.price < prevLow.price;
+    if (hh && hl) return 1;
+    if (lh && ll) return -1;
+    return 0;
+  }
+
+  function refBar(bars) {
+    if (!bars.length) return null;
+    if (CONFIG.smc.requireClosedBreak && bars.length >= 2) return bars[bars.length - 2];
+    return bars[bars.length - 1];
+  }
+
   function detectBOS(bars, pivots) {
-    if (bars.length < 2) return null;
+    const ref = refBar(bars);
+    if (!ref) return null;
+    const trend = structureTrend(pivots);
     const lastHigh = pivots.highs.length ? pivots.highs[pivots.highs.length - 1] : null;
     const lastLow = pivots.lows.length ? pivots.lows[pivots.lows.length - 1] : null;
-    const lastClosed = bars.length > 1 ? bars[bars.length - 2] : bars[bars.length - 1];
 
-    if (lastHigh && lastClosed.c > lastHigh.price) {
+    if (trend === 1 && lastHigh && ref.c > lastHigh.price) {
       return { type: 'BOS', direction: 1, level: lastHigh.price, index: lastHigh.index };
     }
-    if (lastLow && lastClosed.c < lastLow.price) {
+    if (trend === -1 && lastLow && ref.c < lastLow.price) {
       return { type: 'BOS', direction: -1, level: lastLow.price, index: lastLow.index };
+    }
+    if (trend === 0) {
+      if (lastHigh && ref.c > lastHigh.price) {
+        return { type: 'BOS', direction: 1, level: lastHigh.price, index: lastHigh.index };
+      }
+      if (lastLow && ref.c < lastLow.price) {
+        return { type: 'BOS', direction: -1, level: lastLow.price, index: lastLow.index };
+      }
     }
     return null;
   }
 
   function detectCHoCH(bars, pivots) {
-    if (bars.length < 3) return null;
+    const ref = refBar(bars);
+    if (!ref) return null;
+    const trend = structureTrend(pivots);
     const lastHigh = pivots.highs.length ? pivots.highs[pivots.highs.length - 1] : null;
     const lastLow = pivots.lows.length ? pivots.lows[pivots.lows.length - 1] : null;
-    const prevHigh = pivots.highs.length > 1 ? pivots.highs[pivots.highs.length - 2] : null;
-    const prevLow = pivots.lows.length > 1 ? pivots.lows[pivots.lows.length - 2] : null;
-    const lastClosed = bars.length > 1 ? bars[bars.length - 2] : bars[bars.length - 1];
 
-    if (lastHigh && prevLow && lastHigh.price < prevHigh.price && lastClosed.c < prevLow.price) {
-      return { type: 'CHoCH', direction: -1, level: prevLow.price, index: prevLow.index };
+    if (trend === 1 && lastLow && ref.c < lastLow.price) {
+      return { type: 'CHoCH', direction: -1, level: lastLow.price, index: lastLow.index };
     }
-    if (lastLow && prevHigh && lastLow.price > prevLow.price && lastClosed.c > prevHigh.price) {
-      return { type: 'CHoCH', direction: 1, level: prevHigh.price, index: prevHigh.index };
+    if (trend === -1 && lastHigh && ref.c > lastHigh.price) {
+      return { type: 'CHoCH', direction: 1, level: lastHigh.price, index: lastHigh.index };
     }
     return null;
   }
 
-  return { pivots, detectBOS, detectCHoCH };
+  return { pivots, structureTrend, detectBOS, detectCHoCH };
 })();
