@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0D0D0D">
+  <title>SMC Signals — Terminal de Confluencia</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2300D4AA'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='18' font-weight='800' fill='%230D0D0D' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header id="signal-header" class="signal-header is-waiting">
+    <div class="signal-main">
+      <div class="signal-direction">
+        <span id="signal-icon" class="signal-icon">◷</span>
+        <span id="signal-label" class="signal-label">ESPERANDO SETUP</span>
+      </div>
+      <div id="signal-symbol" class="signal-symbol">XAUUSD · 15m</div>
+    </div>
+    <div id="signal-levels" class="signal-levels" hidden>
+      <div class="level"><span>ENTRADA</span><strong id="level-entry">—</strong></div>
+      <div class="level sl"><span>STOP LOSS</span><strong id="level-sl">—</strong></div>
+      <div class="level tp"><span>TAKE PROFIT</span><strong id="level-tp">—</strong></div>
+      <div class="level rr"><span>R / B</span><strong id="level-rr">—</strong></div>
+    </div>
+    <button id="copy-levels" class="btn-copy" hidden>Copiar niveles</button>
+  </header>
+
+  <nav class="toolbar">
+    <div id="symbol-bar" class="symbol-bar"></div>
+    <div id="mode-bar" class="mode-bar">
+      <button class="mode-btn" data-mode="scalping">Scalping</button>
+      <button class="mode-btn" data-mode="day">Día</button>
+    </div>
+    <div class="status-area">
+      <span id="market-status" class="market-status">Cargando…</span>
+      <span id="conn-status" class="conn-status"></span>
+    </div>
+  </nav>
+
+  <main class="workspace">
+    <section class="panel panel-chart">
+      <div class="chart-toolbar">
+        <span id="tf-label" class="tf-label">15m</span>
+        <div id="legend" class="legend">Pase el cursor sobre el gráfico</div>
+      </div>
+      <canvas id="chart"></canvas>
+    </section>
+
+    <aside class="panel panel-confluence">
+      <h2>Confluencia SMC</h2>
+      <div class="confidence-meter">
+        <div class="confidence-bar">
+          <div id="confidence-fill" class="confidence-fill"></div>
+        </div>
+        <span id="confidence-text">Sin señal</span>
+      </div>
+      <ul id="confluence-checklist" class="checklist">
+        <li data-factor="trend" class="pending">Sesgo de Tendencia</li>
+        <li data-factor="structure" class="pending">Estructura (BOS/CHoCH)</li>
+        <li data-factor="zone" class="pending">Zona Institucional (OB/FVG)</li>
+        <li data-factor="momentum" class="pending">Momentum (RSI)</li>
+      </ul>
+      <div id="smc-reason" class="smc-reason">Analizando mercado…</div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <span id="export-info" class="export-info">0 señales registradas</span>
+    <button id="export-btn" class="export-btn" disabled>⬇ Descargar CSV</button>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/indicators.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/structure.js"></script>
+  <script src="js/zones.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/chart.js"></script>
+  <script src="js/exporter.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
