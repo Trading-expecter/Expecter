@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '3.0.0',
+  version: '3.1.0-SCALP',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -22,63 +22,63 @@ window.AT_CONFIG = {
   },
 
   timeframes: {
-    entry: '15m',
-    list: ['15m', '1h', '4h', '1d'],
-    bias: ['4h', '1d'],
-    weights: { '15m': 1, '1h': 2, '4h': 4, '1d': 8 }
+    entry: '5m',
+    list: ['1m', '5m', '15m', '1h'],
+    bias: ['15m', '1h'],
+    weights: { '1m': 1, '5m': 2, '15m': 3, '1h': 4 }
   },
 
   regime: {
     adxPeriod: 14,
-    adxMin: 22,
-    adxStrong: 28,
-    emaFast: 50,
-    emaSlow: 200,
-    emaSeparationMinPct: 0.5,
-    returnLookback: 30,
-    returnMinPct: 0.2
+    adxMin: 18,
+    adxStrong: 25,
+    emaFast: 9,
+    emaSlow: 21,
+    emaSeparationMinPct: 0.05,
+    returnLookback: 10,
+    returnMinPct: 0.02
   },
 
   consensus: {
-    minimumValidTfs: 3,
-    weightedMajority: 0.60,
-    thresholds: { strong: 65, moderate: 45 },
+    minimumValidTfs: 1,
+    weightedMajority: 0.50,
+    thresholds: { strong: 60, moderate: 40 },
     adxNormalizationCeiling: 40,
     tieBreak: 'higher_tf'
   },
 
   risk: {
     atrPeriod: 14,
-    atrStopMult: 1.5,
-    atrTargetMult: 3.0,
-    minRR: 1.8,
+    atrStopMult: 1.2,
+    atrTargetMult: 1.8,
+    minRR: 1.2,
     maxRiskPct: 1.0,
-    maxSignalAgeBars: 8
+    maxSignalAgeBars: 5
   },
 
   exhaustion: {
     rsiPeriod: 14,
-    rsiOverbought: 80,
-    rsiOversold: 20,
+    rsiOverbought: 75,
+    rsiOversold: 25,
     adxDropPct: 30,
     lookbackCandles: 5,
     volumeDropPct: 40,
     volumeLookback: 20,
-    divergenceLookback: 15,
+    divergenceLookback: 10,
     divergenceGap: 1,
-    consensusOverextension: 95,
-    dangerBlockThreshold: 2
+    consensusOverextension: 90,
+    dangerBlockThreshold: 3
   },
 
   smc: {
     atrPeriod: 14,
-    pivotLookback: 5,
-    mssWindow: 15,
-    sweepWindow: 5,
+    pivotLookback: 3,
+    mssWindow: 10,
+    sweepWindow: 3,
     sweepAtrMult: 0.35,
     sweepMaxAtrMult: 1.8,
     sweepRejectionMin: 0.5,
-    obAtrMult: 1.8,
+    obAtrMult: 1.5,
     obMaxZones: 3,
     obMaxAgeBars: 150,
     fvgMaxZones: 3,
@@ -92,10 +92,10 @@ window.AT_CONFIG = {
     minSwingAtrMult: 4,
     maxSwingAge: 200,
     weights: { mss: 30, sweep: 25, fvg: 15, ob: 15, ote: 15 },
-    requireZoneForHigh: true,
-    highConfluence: 80,
-    mediumConfluence: 50,
-    minComponentsForMedium: 2
+    requireZoneForHigh: false,
+    highConfluence: 70,
+    mediumConfluence: 45,
+    minComponentsForMedium: 1
   },
 
   sessions: {
@@ -116,8 +116,8 @@ window.AT_CONFIG = {
   feed: {
     fetchTimeout: 8000,
     globalTimeout: 20000,
-    pollMs: 2000,
-    pollSlowMs: 20000,
+    pollMs: 1000,
+    pollSlowMs: 5000,
     retryMs: 60000,
     backoffMs: 10000,
     maxConcurrent: 3,
@@ -125,10 +125,10 @@ window.AT_CONFIG = {
   },
 
   chart: {
-    defaultCount: 150,
+    defaultCount: 100,
     minCount: 20,
     maxCount: 1000,
-    emaPeriods: [20, 50, 200],
+    emaPeriods: [9, 21, 50],
     colors: {
       ema20: '#f59e0b',
       ema50: '#00b8d9',
@@ -156,8 +156,8 @@ window.AT_CONFIG = {
   },
 
   analysis: {
-    minBarsPerTf: 50,
+    minBarsPerTf: 15,
     throttleMs: 1000,
-    useClosedCandlesOnly: true
+    useClosedCandlesOnly: false
   }
 };

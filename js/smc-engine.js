@@ -3,10 +3,10 @@ window.AT.smcEngine = (function (I) {
   'use strict';
 
   const DEFAULT_ATR_PERIOD = 14;
-  const DEFAULT_HIGH_CONFLUENCE = 80;
-  const DEFAULT_MEDIUM_CONFLUENCE = 50;
-  const DEFAULT_MIN_CONFIDENCE = 15;
-  const DEFAULT_MIN_COMPONENTS = 2;
+  const DEFAULT_HIGH_CONFLUENCE = 70;
+  const DEFAULT_MEDIUM_CONFLUENCE = 45;
+  const DEFAULT_MIN_CONFIDENCE = 5;
+  const DEFAULT_MIN_COMPONENTS = 1;
   const SWEEP_AGAINST_PENALTY = 15;
   const BOS_WEIGHT_FACTOR = 0.5;
   const STALE_MSS_FACTOR = 0.5;
@@ -34,7 +34,7 @@ window.AT.smcEngine = (function (I) {
   }
 
   function requireZoneForHigh() {
-    return cfg().requireZoneForHigh !== false;
+    return cfg().requireZoneForHigh === true;
   }
 
   function atrPeriod() {
@@ -58,15 +58,15 @@ window.AT.smcEngine = (function (I) {
     context = context || {};
     return {
       score: 0,
-      label: 'Sin confluencia suficiente',
+      label: 'Escaneando',
       direction: direction || 0,
       trend: 'Débil',
       grade: 'Débil',
       reasons: [reason],
       breakdown: {},
       zones: { ob: null, fvg: null, ote: null, allOBs: [], allFVGs: [] },
-      vetoes: [reason],
-      vetoed: true,
+      vetoes: [],
+      vetoed: false,
       activeComponents: 0,
       context: context
     };
@@ -87,7 +87,7 @@ window.AT.smcEngine = (function (I) {
   function evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w) {
     const result = {
       score: 0,
-      label: 'Sin confluencia suficiente',
+      label: 'Escaneando',
       direction: direction,
       trend: 'Débil',
       reasons: [],
@@ -112,7 +112,7 @@ window.AT.smcEngine = (function (I) {
       result.breakdown.mss = {
         value: base,
         weighted: weighted,
-        reason: (mss.type || 'MSS') + ' a favor (barsSince ' + mss.barsSince + ')'
+        reason: (mss.type || 'MSS') + ' a favor (velas: ' + mss.barsSince + ')'
       };
       result.reasons.push('Estructura a favor (' + (mss.type || 'MSS') + ').');
     } else {
@@ -132,7 +132,7 @@ window.AT.smcEngine = (function (I) {
       };
       result.reasons.push('Barrido de liquidez a favor.');
     } else {
-      result.breakdown.sweep = { value: 0, weighted: 0, reason: 'Sin sweep a favor' };
+      result.breakdown.sweep = { value: 0, weighted: 0, reason: 'Sin sweep' };
     }
 
     const sweepAgainst = sweeps.find(function (s) { return s.direction !== direction; });
@@ -226,8 +226,8 @@ window.AT.smcEngine = (function (I) {
     }
 
     if (confidence < DEFAULT_MIN_CONFIDENCE) {
-      result.vetoes.push('Confianza insuficiente (' + confidence.toFixed(0) + '%).');
-      vetoed = true;
+      // Si la confianza es muy baja, penalizamos pero no bloqueamos
+      result.score = result.score * 0.5;
     }
 
     if (vetoed) {
@@ -236,7 +236,7 @@ window.AT.smcEngine = (function (I) {
       result.reasons = result.vetoes.map(function (v) { return '🚫 ' + v; });
       result.vetoed = true;
       result.grade = 'Débil';
-      result.label = 'Sin confluencia suficiente';
+      result.label = 'Sin confluencia';
       result.trend = 'Débil';
       return result;
     }
@@ -264,7 +264,7 @@ window.AT.smcEngine = (function (I) {
     }
 
     if (grade === 'Alta') {
-      result.label = 'ENTRADA DE ALTA PROBABILIDAD';
+      result.label = 'ENTRADA PERFECTA';
       result.trend = 'Fuerte';
     } else if (grade === 'Moderada') {
       result.label = 'Entrada Moderada';
@@ -283,8 +283,8 @@ window.AT.smcEngine = (function (I) {
     context = context || {};
     direction = direction === 1 || direction === -1 ? direction : 0;
 
-    if (!bars || bars.length < 50) {
-      return emptyResult(direction, 'Historial insuficiente para analizar.', context);
+    if (!bars || bars.length < 15) {
+      return emptyResult(direction, 'Historial insuficiente (mínimo 15 velas).', context);
     }
 
     const atr = computeAtr(bars);

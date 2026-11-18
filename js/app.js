@@ -9,13 +9,13 @@
 
   const state = {
     symbol: 'XAUUSD',
-    tf: (CFG.timeframes && CFG.timeframes.entry) || '15m',
+    tf: (CFG.timeframes && CFG.timeframes.entry) || '5m',
     bars: {},
     ticks: {},
     analysis: null,
     smcResult: null,
     feedMode: 'off',
-    loading: false,
+    loading: true,
     requestId: 0,
     renderTimer: null,
     analysisTimer: null,
@@ -44,12 +44,12 @@
 
   function fmt(sym, price) {
     const inst = CFG.symbols[sym];
-    if (!inst || price == null || !Number.isFinite(price)) return '—';
+    if (!inst || price == null || !Number.isFinite(price)) return '0.00';
     return Number(price).toFixed(inst.digits);
   }
 
   function sgn(v, d) {
-    if (v == null || !Number.isFinite(v)) return '—';
+    if (v == null || !Number.isFinite(v)) return '+0.00';
     return (v >= 0 ? '+' : '') + Number(v).toFixed(d);
   }
 
@@ -75,7 +75,7 @@
     state.gapRefill[tf] = true;
 
     const myId = state.requestId;
-    D.fetchBars(state.symbol, tf, 1000).then(function (bars) {
+    D.fetchBars(state.symbol, tf, 500).then(function (bars) {
       if (state.requestId !== myId) return;
       if (bars && bars.length) {
         state.bars[tf] = bars;
@@ -133,7 +133,7 @@
     let cls = '';
     let msg = 'Conectando…';
     if (m === 'live') { cls = 'ok'; msg = 'En vivo'; }
-    else if (m === 'polling') { cls = 'warn'; msg = 'Sondeo'; }
+    else if (m === 'polling') { cls = 'warn'; msg = 'Sincronizando'; }
     else if (m === 'reconnecting') { cls = 'warn'; msg = 'Reconectando…'; }
     else if (m === 'error') { cls = 'bad'; msg = 'Sin conexión'; }
     dot.className = 'dot ' + cls;
@@ -149,25 +149,23 @@
 
     const chg = $('priceChg');
     if (t && t.dayPct != null && t.state !== 'closed') {
-      chg.textContent = sgn(t.dayPct, 2) + '% hoy';
+      chg.textContent = sgn(t.dayPct, 2) + '%';
       chg.className = 'price-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
     } else {
-      chg.textContent = '';
+      chg.textContent = '0.00%';
+      chg.className = 'price-chg';
     }
 
     $('priceSub').textContent = t
       ? 'Bid ' + fmt(state.symbol, t.bid) + ' · Ask ' + fmt(state.symbol, t.ask) + ' · Spread ' + fmt(state.symbol, t.spread)
-      : 'Esperando precio…';
+      : 'Esperando precio...';
 
     const sb = $('sessionBadge');
     const a = state.analysis;
-    const open = a ? a.marketOpen : false;
-    const label = a ? a.sessionLabel : '—';
+    const open = a ? a.marketOpen : true;
+    const label = a ? a.sessionLabel : 'Escaneando';
     sb.textContent = label;
     sb.className = 'session-badge ' + (open ? 'ok' : 'bad');
-    sb.title = open
-      ? (a && a.highLiquidity ? 'Mercado abierto, liquidez alta' : 'Mercado abierto, liquidez normal')
-      : 'Mercado cerrado';
   }
 
   function renderGauge() {
@@ -178,9 +176,9 @@
 
     if (!a) {
       needle.style.opacity = '0.3';
-      label.textContent = 'Cargando…';
+      label.textContent = 'Cargando...';
       label.className = 'gauge-label neutral';
-      score.textContent = '';
+      score.textContent = 'Consenso: 0%';
       return;
     }
 
@@ -204,7 +202,7 @@
     if (!a) {
       badge.textContent = 'ESPERAR';
       badge.className = 'verdict-badge wait';
-      reason.textContent = 'Esperando datos del mercado...';
+      reason.textContent = 'Sincronizando motor de análisis...';
       return;
     }
 
@@ -214,7 +212,7 @@
     let text = a.verdictReason || '';
     if (a.verdictRisk && a.verdictRisk.valid) {
       const r = a.verdictRisk;
-      text += ' · Stop ' + fmt(state.symbol, r.stop) + ' · Target ' + fmt(state.symbol, r.target);
+      text += ' | TP: ' + fmt(state.symbol, r.target);
     }
     reason.textContent = text;
   }
@@ -230,17 +228,17 @@
       scoreEl.style.color = 'var(--accent)';
       barEl.style.width = '0%';
       barEl.style.backgroundColor = 'var(--accent)';
-      reasonsEl.innerHTML = '<li class="muted">Esperando datos...</li>';
+      reasonsEl.innerHTML = '<li class="muted">Escaneando bloques institucionales...</li>';
       return;
     }
 
     scoreEl.textContent = smc.score.toFixed(0) + '%';
     barEl.style.width = smc.score + '%';
 
-    if (smc.score >= 80) {
+    if (smc.score >= 70) {
       barEl.style.backgroundColor = 'var(--up)';
       scoreEl.style.color = 'var(--up)';
-    } else if (smc.score >= 50) {
+    } else if (smc.score >= 45) {
       barEl.style.backgroundColor = 'var(--warn)';
       scoreEl.style.color = 'var(--warn)';
     } else {
@@ -265,13 +263,7 @@
       lines.push('<li>' + esc(names[key] || key) + ': ' + sign + val + esc(detail) + '</li>');
     });
 
-    if (lines.length === 0) lines.push('<li class="muted">Sin componentes ponderados.</li>');
-
-    if (smc.vetoes && smc.vetoes.length) {
-      smc.vetoes.forEach(function (v) {
-        lines.push('<li style="color: var(--warn)">⚠ ' + esc(v) + '</li>');
-      });
-    }
+    if (lines.length === 0) lines.push('<li class="muted">Sin componentes de alta probabilidad.</li>');
 
     reasonsEl.innerHTML = lines.join('');
   }
@@ -294,17 +286,24 @@
 
   function renderMetrics() {
     const a = state.analysis;
-    if (!a) return;
+    if (!a) {
+      $('macroTrend').textContent = 'Calculando...';
+      $('macroMomentum').textContent = 'Calculando...';
+      $('macroVolatility').textContent = 'Calculando...';
+      $('macroStructure').textContent = 'Lateral';
+      $('macroStructure').className = 'metric-val';
+      return;
+    }
 
     const tEl = $('macroTrend');
-    let trendTxt = a.macroTrend || '—';
+    let trendTxt = a.macroTrend || 'Débil';
     if (Number.isFinite(a.avgAdxAligned) && a.avgAdxAligned > 0) {
       trendTxt += ' (' + a.avgAdxAligned.toFixed(1) + ')';
     }
     tEl.textContent = trendTxt;
 
-    $('macroMomentum').textContent = a.macroMomentum || '—';
-    $('macroVolatility').textContent = a.macroVolatility || '—';
+    $('macroMomentum').textContent = a.macroMomentum || 'Neutro';
+    $('macroVolatility').textContent = a.macroVolatility || 'Normal';
 
     const sEl = $('macroStructure');
     let structTxt = 'Lateral';
@@ -312,9 +311,6 @@
     if (a.consensusLabel !== 'neutral' && a.overallDirection !== 0) {
       structTxt = a.overallDirection === 1 ? 'Alcista' : 'Bajista';
       structCls += ' ' + (a.overallDirection === 1 ? 'up' : 'down');
-      if (Number.isFinite(a.avgAdxOpposed) && a.avgAdxOpposed > 0) {
-        structTxt += ' · contra ' + a.avgAdxOpposed.toFixed(1);
-      }
     }
     sEl.textContent = structTxt;
     sEl.className = structCls;
@@ -323,7 +319,7 @@
   function renderMtf() {
     const a = state.analysis;
     const box = $('mtf');
-    const allTfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
+    const allTfs = CFG.timeframes.list || ['5m', '15m', '1h', '4h'];
     const optional = CFG.timeframes.optional || [];
 
     if (box.children.length !== allTfs.length) {
@@ -335,7 +331,7 @@
           ' aria-selected="' + selected + '"' +
           (isOpt ? ' data-optional="true"' : '') + '>' +
           '<span class="tfn">' + esc(tf) + '</span>' +
-          '<span class="lab neutral">—</span>' +
+          '<span class="lab neutral">...</span>' +
           '</button>';
       });
       box.innerHTML = html;
@@ -354,17 +350,8 @@
       if (tfData) {
         if (tfData.direction === 1) { lab.textContent = 'Alcista'; lab.className = 'lab buy'; }
         else { lab.textContent = 'Bajista'; lab.className = 'lab sell'; }
-        if (tfData.regimeValid === false) {
-          lab.textContent += ' ·';
-          lab.title = 'Régimen no válido';
-        } else {
-          lab.title = '';
-        }
-      } else if (a) {
-        lab.textContent = '—';
-        lab.className = 'lab neutral';
       } else {
-        lab.textContent = '…';
+        lab.textContent = '...';
         lab.className = 'lab neutral';
       }
     });
@@ -374,7 +361,7 @@
     const a = state.analysis;
     const el = $('conclusionText');
     if (!a) {
-      el.textContent = 'Esperando datos suficientes para generar un veredicto...';
+      el.textContent = 'Escaneando el mercado en busca de entradas perfectas...';
       return;
     }
     el.textContent = a.conclusion;
@@ -448,31 +435,25 @@
     const entryTf = res.entryTf || state.tf;
     const entryBarsRaw = state.bars[entryTf];
 
-    if (entryBarsRaw && entryBarsRaw.length > 50) {
-      const analysisCfg = CFG.analysis || {};
-      const useClosed = analysisCfg.useClosedCandlesOnly !== false;
-      const closedBars = (useClosed && entryBarsRaw.length > 1)
-        ? entryBarsRaw.slice(0, -1)
-        : entryBarsRaw;
-
+    if (entryBarsRaw && entryBarsRaw.length > 15) {
       const smcCtx = {
         confidence: res.confidence,
         marketOpen: res.marketOpen,
         sessionActive: res.highLiquidity,
         entryTf: entryTf
       };
-      state.smcResult = SMC.evaluate(closedBars, res.overallDirection, smcCtx);
+      state.smcResult = SMC.evaluate(entryBarsRaw, res.overallDirection, smcCtx);
     } else {
       state.smcResult = {
         score: 0,
-        label: 'Sin datos',
-        reasons: ['Esperando velas históricas…'],
-        vetoes: ['Historial insuficiente'],
+        label: 'Escaneando',
+        reasons: ['Cargando velas institucionales...'],
+        vetoes: [],
         breakdown: {},
-        zones: { ob: null, fvg: null, ote: null, allOBs: [], allFVGs: [] },
+        zones: { ob: null, fvg: null, ote: null },
         direction: 0,
         trend: 'Débil',
-        vetoed: true,
+        vetoed: false,
         grade: 'Débil',
         activeComponents: 0
       };
@@ -503,13 +484,13 @@
     state.loading = true;
     state.requestId++;
     const myId = state.requestId;
-    const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
+    const tfs = CFG.timeframes.list || ['5m', '15m', '1h'];
 
     const tasks = tfs.map(function (tf) {
-      return function () { return D.fetchBars(state.symbol, tf, 1000); };
+      return function () { return D.fetchBars(state.symbol, tf, 500); };
     });
 
-    return D.pool(tasks, 3, 20000).then(function (results) {
+    return D.pool(tasks, 3, 15000).then(function (results) {
       if (state.requestId !== myId) return null;
       state.bars = {};
       results.forEach(function (r, i) {
@@ -573,7 +554,7 @@
       b.setAttribute('aria-pressed', sym === state.symbol ? 'true' : 'false');
       b.dataset.sym = sym;
       b.innerHTML = '<span class="sym-name">' + esc(sym) + '</span>' +
-                    '<span class="sym-price">—</span>' +
+                    '<span class="sym-price">0.00</span>' +
                     '<span class="sym-chg muted">&nbsp;</span>';
       b.addEventListener('click', function () { selectSymbol(sym); });
       bar.appendChild(b);
