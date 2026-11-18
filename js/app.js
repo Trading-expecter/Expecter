@@ -208,13 +208,7 @@
 
     badge.textContent = a.verdictLabel;
     badge.className = 'verdict-badge ' + a.verdictState;
-
-    let text = a.verdictReason || '';
-    if (a.verdictRisk && a.verdictRisk.valid) {
-      const r = a.verdictRisk;
-      text += ' | TP: ' + fmt(state.symbol, r.target);
-    }
-    reason.textContent = text;
+    reason.textContent = a.verdictReason || '';
   }
 
   function renderSMC() {
@@ -350,6 +344,7 @@
       if (tfData) {
         if (tfData.direction === 1) { lab.textContent = 'Alcista'; lab.className = 'lab buy'; }
         else { lab.textContent = 'Bajista'; lab.className = 'lab sell'; }
+        if (tfData.regimeValid === false) lab.className += ' weak';
       } else {
         lab.textContent = '...';
         lab.className = 'lab neutral';
@@ -418,7 +413,9 @@
           targetPrice: analysis.verdictRisk.target,
           rr: analysis.verdictRisk.rr,
           score: analysis.consensusScore,
-          confidence: analysis.confidence
+          confidence: analysis.confidence,
+          smcGrade: analysis.smcGrade,
+          smcScore: analysis.smcScore
         });
         if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
       }
@@ -430,8 +427,6 @@
     state.lastAnalysisAt = Date.now();
 
     const res = A.analyze(state.bars, { currentTf: state.tf, symbol: state.symbol });
-    state.analysis = res;
-
     const entryTf = res.entryTf || state.tf;
     const entryBarsRaw = state.bars[entryTf];
 
@@ -454,12 +449,14 @@
         direction: 0,
         trend: 'Débil',
         vetoed: false,
-        grade: 'Débil',
+        grade: null,
         activeComponents: 0
       };
     }
 
-    logSignalIfChanged(res);
+    state.analysis = A.applySmc(res, state.smcResult);
+
+    logSignalIfChanged(state.analysis);
     renderAll();
   }
 

@@ -192,18 +192,20 @@
     let stop, target, risk, reward;
     if (direction === 1) {
       const atrStop = entry - stopMult * atr;
-      stop = num(support) ? Math.min(support, atrStop) : atrStop;
+      stop = (num(support) && support < entry) ? Math.max(support, atrStop) : atrStop;
+      if (!(stop < entry)) return null;
       const atrTarget = entry + targetMult * atr;
-      target = num(resistance) ? Math.min(resistance, atrTarget) : atrTarget;
-      if (target <= entry) return null;
+      target = (num(resistance) && resistance > entry) ? Math.max(resistance, atrTarget) : atrTarget;
+      if (!(target > entry)) return null;
       risk = entry - stop;
       reward = target - entry;
     } else if (direction === -1) {
       const atrStop = entry + stopMult * atr;
-      stop = num(resistance) ? Math.max(resistance, atrStop) : atrStop;
+      stop = (num(resistance) && resistance > entry) ? Math.min(resistance, atrStop) : atrStop;
+      if (!(stop > entry)) return null;
       const atrTarget = entry - targetMult * atr;
-      target = num(support) ? Math.max(support, atrTarget) : atrTarget;
-      if (target >= entry) return null;
+      target = (num(support) && support < entry) ? Math.min(support, atrTarget) : atrTarget;
+      if (!(target < entry)) return null;
       risk = stop - entry;
       reward = entry - target;
     } else {
@@ -220,9 +222,6 @@
     if (!bars || bars.length < 20) return alerts;
 
     const closes = bars.map(function (b) { return b.c; });
-    const highs = bars.map(function (b) { return b.h; });
-    const lows = bars.map(function (b) { return b.l; });
-    const vols = bars.map(function (b) { return b.v || 0; });
 
     const i = bars.length - 1;
     const rsiPeriod = exCfg.rsiPeriod || 14;
@@ -278,8 +277,6 @@
     const thresholds = consensusCfg.thresholds || { strong: 60, moderate: 40 };
     const minValidTfs = consensusCfg.minimumValidTfs || 1;
     const weightedMajority = consensusCfg.weightedMajority || 0.50;
-    const dangerBlock = exCfg.dangerBlockThreshold || 3;
-    const minRR = riskCfg.minRR || 1.2;
 
     const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '5m';
     const symbol = opts.symbol || 'XAUUSD';
@@ -296,17 +293,23 @@
     tfs.forEach(function (tf) {
       const bars = cleanBars(barsByTf[tf]);
       const r = analyzeTimeframe(bars);
-      if (r) {
-        r.adxNorm = normalizeAdx(r.adx);
-        r.weight = weightFor(tf);
-        r.evidence = r.weight * (r.adxNorm > 0 ? r.adxNorm : 0.5);
-        perTf[tf] = r;
-        valid.push({ tf: tf, data: r });
-      }
+      if (!r) return;
+      r.adxNorm = normalizeAdx(r.adx);
+      r.weight = weightFor(tf);
+      r.evidence = r.regimeValid ? r.weight * (r.adxNorm > 0 ? r.adxNorm : 0.5) : 0;
+      perTf[tf] = r;
+      if (r.regimeValid) valid.push({ tf: tf, data: r });
     });
 
     if (valid.length === 0) {
-      return emptyResult('Cargando datos de mercado o historial insuficiente...', sessionLabel, marketState.open, marketState.family);
+      const reason = Object.keys(perTf).length > 0
+        ? 'Sin régimen válido en ningún timeframe. Mercado lateral.'
+        : 'Cargando datos de mercado o historial insuficiente...';
+      return emptyResult(reason, sessionLabel, marketState.open, marketState.family);
+    }
+
+    if (valid.length < minValidTfs) {
+      return emptyResult('Timeframes válidos insuficientes (' + valid.length + '/' + minValidTfs + ').', sessionLabel, marketState.open, marketState.family);
     }
 
     let buyWeight = 0;
@@ -320,8 +323,13 @@
     const buyShare = totalWeight > 0 ? buyWeight / totalWeight : 0.5;
 
     let overallDirection = 0;
-    if (buyShare >= weightedMajority) overallDirection = 1;
-    else if (buyShare <= 1 - weightedMajority) overallDirection = -1;
+    if (buyShare > weightedMajority) overallDirection = 1;
+    else if (buyShare < 1 - weightedMajority) overallDirection = -1;
+
+    if (overallDirection === 0) {
+      const sorted = valid.slice().sort(function (a, b) { return b.data.weight - a.data.weight; });
+      if (sorted.length > 0) overallDirection = sorted[0].data.direction;
+    }
 
     let sumAllEvidence = 0;
     let sumAgreeEvidence = 0;
@@ -434,8 +442,42 @@
     };
   }
 
+  function applySmc(result, smc) {
+    if (!result || !smc) return result;
+
+    result.smcScore = num(smc.score) ? smc.score : 0;
+    result.smcGrade = smc.grade || null;
+    result.smcLabel = smc.label || null;
+    result.smcVetoed = smc.vetoed === true;
+
+    if (smc.vetoed === true) {
+      result.confidence = 0;
+      result.verdictState = 'wait';
+      result.verdictLabel = 'ESPERAR';
+      const vetoes = (smc.vetoes && smc.vetoes.length) ? ' ' + smc.vetoes.join(' ') : '';
+      result.verdictReason = 'SMC sin confluencia.' + vetoes;
+      result.conclusion = 'Setup vetado por SMC. ' + result.verdictReason;
+      return result;
+    }
+
+    if (smc.grade === 'Alta') {
+      result.confidence = Math.min(100, result.confidence * 1.2);
+      result.smcBoost = true;
+    } else if (smc.grade === 'Débil') {
+      result.confidence = result.confidence * 0.7;
+      result.smcPenalty = true;
+    }
+
+    if (result.conclusion && result.smcGrade) {
+      result.conclusion += ' SMC: ' + result.smcGrade + ' (' + result.smcScore.toFixed(0) + '%).';
+    }
+
+    return result;
+  }
+
   return {
     analyze: analyze,
+    applySmc: applySmc,
     LABELS: LABELS,
     SESSION_LABELS: SESSION_LABELS,
     getMarketState: getMarketState,

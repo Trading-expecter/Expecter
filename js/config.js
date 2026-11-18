@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '3.1.0-SCALP',
+  version: '3.2.0-SCALP-AUDIT',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -34,13 +34,13 @@ window.AT_CONFIG = {
     adxStrong: 25,
     emaFast: 9,
     emaSlow: 21,
-    emaSeparationMinPct: 0.05,
+    emaSeparationMinPct: 0.15,
     returnLookback: 10,
-    returnMinPct: 0.02
+    returnMinPct: 0.05
   },
 
   consensus: {
-    minimumValidTfs: 1,
+    minimumValidTfs: 2,
     weightedMajority: 0.50,
     thresholds: { strong: 60, moderate: 40 },
     adxNormalizationCeiling: 40,
@@ -54,6 +54,13 @@ window.AT_CONFIG = {
     minRR: 1.2,
     maxRiskPct: 1.0,
     maxSignalAgeBars: 5
+  },
+
+  vwap: {
+    enabled: false,
+    sessionResetUtc: 0,
+    deviationPct: 0.15,
+    useAsBiasFilter: false
   },
 
   exhaustion: {
@@ -130,9 +137,9 @@ window.AT_CONFIG = {
     maxCount: 1000,
     emaPeriods: [9, 21, 50],
     colors: {
-      ema20: '#f59e0b',
-      ema50: '#00b8d9',
-      ema200: '#a855f7',
+      ema9: '#f59e0b',
+      ema21: '#00b8d9',
+      ema50: '#a855f7',
       up: '#10b981',
       down: '#f43f5e',
       grid: 'rgba(255, 255, 255, 0.06)',

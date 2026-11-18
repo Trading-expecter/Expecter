@@ -10,12 +10,22 @@
   const MAX_COUNT = 1000;
   const RESIZE_DEBOUNCE_MS = 100;
   const WHEEL_ZOOM_FACTOR = 1.1;
-  const EMA_PERIODS = [20, 50, 200];
+  const DEFAULT_EMA_PERIODS = [9, 21, 50];
+  const EMA_FALLBACK_COLORS = ['#f59e0b', '#00b8d9', '#a855f7'];
   const STORAGE_PREFIX = 'mcp:drawings:';
   const MIN_DRAW_PIXELS = 5;
 
   function cfg() { return (window.AT_CONFIG && window.AT_CONFIG.chart) || {}; }
   function drawCfg() { return (window.AT_CONFIG && window.AT_CONFIG.drawing) || {}; }
+
+  function emaPeriods() {
+    const p = cfg().emaPeriods;
+    return (Array.isArray(p) && p.length) ? p : DEFAULT_EMA_PERIODS;
+  }
+
+  function emaFallbackColor(i) {
+    return EMA_FALLBACK_COLORS[i % EMA_FALLBACK_COLORS.length];
+  }
 
   function color(key, fallback) {
     const colors = cfg().colors;
@@ -69,7 +79,7 @@
       pinchStart: null,
       raf: 0,
       resizeTimer: null,
-      emas: { e20: [], e50: [], e200: [] },
+      emas: [],
       emasMeta: { lastLen: 0, firstT: 0, lastC: NaN },
       zones: emptyZones(),
       tool: 'cursor',
@@ -339,11 +349,12 @@
     }
 
     function computeEmas(closes) {
-      return {
-        e20: I.ema(closes, EMA_PERIODS[0]),
-        e50: I.ema(closes, EMA_PERIODS[1]),
-        e200: I.ema(closes, EMA_PERIODS[2])
-      };
+      const periods = emaPeriods();
+      const out = new Array(periods.length);
+      for (let i = 0; i < periods.length; i++) {
+        out[i] = I.ema(closes, periods[i]);
+      }
+      return out;
     }
 
     function updateLast(prevArr, closes, period) {
@@ -389,8 +400,10 @@
       }
 
       const closes = st.bars.map(function (b) { return b.c; });
+      const periods = emaPeriods();
+      const emasLenMismatch = st.emas.length !== periods.length;
 
-      if (identityChanged || prevLen === 0 || newLen < prevLen) {
+      if (identityChanged || prevLen === 0 || newLen < prevLen || emasLenMismatch) {
         st.emas = computeEmas(closes);
         if (scopeChanged || bufferRotated) {
           st.offset = 0;
@@ -399,14 +412,14 @@
         if (prevLen === 1) {
           st.emas = computeEmas(closes);
         } else if (closes[newLen - 1] !== st.emasMeta.lastC) {
-          st.emas.e20 = updateLast(st.emas.e20, closes, EMA_PERIODS[0]);
-          st.emas.e50 = updateLast(st.emas.e50, closes, EMA_PERIODS[1]);
-          st.emas.e200 = updateLast(st.emas.e200, closes, EMA_PERIODS[2]);
+          for (let i = 0; i < periods.length; i++) {
+            st.emas[i] = updateLast(st.emas[i], closes, periods[i]);
+          }
         }
       } else if (newLen === prevLen + 1) {
-        st.emas.e20 = appendLast(st.emas.e20, closes, EMA_PERIODS[0]);
-        st.emas.e50 = appendLast(st.emas.e50, closes, EMA_PERIODS[1]);
-        st.emas.e200 = appendLast(st.emas.e200, closes, EMA_PERIODS[2]);
+        for (let i = 0; i < periods.length; i++) {
+          st.emas[i] = appendLast(st.emas[i], closes, periods[i]);
+        }
       } else {
         st.emas = computeEmas(closes);
       }
@@ -585,9 +598,14 @@
         }
         ctx.stroke();
       }
-      drawEma(st.emas.e20, color('ema20', '#f59e0b'));
-      drawEma(st.emas.e50, color('ema50', '#00b8d9'));
-      drawEma(st.emas.e200, color('ema200', '#a855f7'));
+
+      const periods = emaPeriods();
+      for (let i = 0; i < periods.length; i++) {
+        const p = periods[i];
+        const arr = st.emas[i];
+        if (!arr) continue;
+        drawEma(arr, color('ema' + p, emaFallbackColor(i)));
+      }
 
       for (let i = 0; i < st.drawings.length; i++) {
         renderDrawing(st.drawings[i], r, bounds, plotW, plotH, false);

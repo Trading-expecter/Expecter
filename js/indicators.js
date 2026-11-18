@@ -8,8 +8,9 @@
     return new Array(n).fill(null);
   }
 
-  function firstValid(values) {
-    for (let i = 0; i < values.length; i++) {
+  function firstValid(values, from) {
+    const start = from || 0;
+    for (let i = start; i < values.length; i++) {
       const v = values[i];
       if (v != null && Number.isFinite(v)) return i;
     }
@@ -20,17 +21,44 @@
     return values[values.length - 1 - (k || 0)];
   }
 
+  function seedSum(values, start, period) {
+    let sum = 0;
+    for (let i = start; i < start + period; i++) {
+      const v = values[i];
+      if (v == null || !Number.isFinite(v)) return null;
+      sum += v;
+    }
+    return sum;
+  }
+
   function sma(values, period) {
     const n = values.length;
     const out = nulls(n);
-    const start = firstValid(values);
-    if (start < 0 || n - start < period) return out;
-    let sum = 0;
-    for (let i = start; i < start + period; i++) sum += values[i];
-    out[start + period - 1] = sum / period;
-    for (let i = start + period; i < n; i++) {
-      sum += values[i] - values[i - period];
-      out[i] = sum / period;
+    if (period <= 0 || n < period) return out;
+
+    let start = firstValid(values);
+    while (start >= 0 && start + period <= n) {
+      const sum = seedSum(values, start, period);
+      if (sum != null) {
+        out[start + period - 1] = sum / period;
+        for (let i = start + period; i < n; i++) {
+          const cur = values[i];
+          const drop = values[i - period];
+          if (cur == null || !Number.isFinite(cur) || drop == null || !Number.isFinite(drop)) {
+            out[i] = null;
+            continue;
+          }
+          const prev = out[i - 1];
+          if (prev == null) {
+            const winSum = seedSum(values, i - period + 1, period);
+            out[i] = winSum != null ? winSum / period : null;
+          } else {
+            out[i] = prev + (cur - drop) / period;
+          }
+        }
+        return out;
+      }
+      start = firstValid(values, start + 1);
     }
     return out;
   }
@@ -38,15 +66,26 @@
   function smooth(values, period, alpha) {
     const n = values.length;
     const out = nulls(n);
-    const start = firstValid(values);
-    if (start < 0 || n - start < period) return out;
-    let prev = 0;
-    for (let i = start; i < start + period; i++) prev += values[i];
-    prev /= period;
-    out[start + period - 1] = prev;
-    for (let i = start + period; i < n; i++) {
-      prev = alpha * values[i] + (1 - alpha) * prev;
-      out[i] = prev;
+    if (period <= 0 || alpha <= 0 || alpha > 1 || n < period) return out;
+
+    let start = firstValid(values);
+    while (start >= 0 && start + period <= n) {
+      const sum = seedSum(values, start, period);
+      if (sum != null) {
+        let prev = sum / period;
+        out[start + period - 1] = prev;
+        for (let i = start + period; i < n; i++) {
+          const v = values[i];
+          if (v == null || !Number.isFinite(v)) {
+            out[i] = null;
+            continue;
+          }
+          prev = alpha * v + (1 - alpha) * prev;
+          out[i] = prev;
+        }
+        return out;
+      }
+      start = firstValid(values, start + 1);
     }
     return out;
   }
@@ -60,11 +99,15 @@
   }
 
   function updateEma(previous, value, period) {
+    if (previous == null || !Number.isFinite(previous)) return value;
+    if (value == null || !Number.isFinite(value)) return previous;
     const k = 2 / (period + 1);
     return value * k + previous * (1 - k);
   }
 
   function updateRma(previous, value, period) {
+    if (previous == null || !Number.isFinite(previous)) return value;
+    if (value == null || !Number.isFinite(value)) return previous;
     return (previous * (period - 1) + value) / period;
   }
 
@@ -147,9 +190,13 @@
     const dx = nulls(n);
 
     for (let i = 0; i < n; i++) {
-      if (smoothedTr[i] == null || smoothedPlus[i] == null || smoothedMinus[i] == null) continue;
-      plusDI[i] = smoothedTr[i] === 0 ? 0 : (100 * smoothedPlus[i]) / smoothedTr[i];
-      minusDI[i] = smoothedTr[i] === 0 ? 0 : (100 * smoothedMinus[i]) / smoothedTr[i];
+      const sp = smoothedPlus[i];
+      const sm = smoothedMinus[i];
+      const st = smoothedTr[i];
+      if (sp == null || sm == null || st == null) continue;
+      if (!Number.isFinite(sp) || !Number.isFinite(sm) || !Number.isFinite(st)) continue;
+      plusDI[i] = st === 0 ? 0 : (100 * sp) / st;
+      minusDI[i] = st === 0 ? 0 : (100 * sm) / st;
       const sum = plusDI[i] + minusDI[i];
       dx[i] = sum === 0 ? 0 : (100 * Math.abs(plusDI[i] - minusDI[i])) / sum;
     }
@@ -157,7 +204,8 @@
     return {
       adx: rma(dx, period),
       plusDI: plusDI,
-      minusDI: minusDI
+      minusDI: minusDI,
+      dx: dx
     };
   }
 

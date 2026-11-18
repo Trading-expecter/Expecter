@@ -48,6 +48,8 @@
   function retryable(e) {
     if (!e) return false;
     if (e.network || e.timeout) return true;
+    if (e.status === 429) return true;
+    if (e.status >= 400 && e.status < 500) return false;
     return e.status >= 500 && e.status < 600;
   }
 
@@ -83,9 +85,11 @@
       throw e;
     }).catch(function (e) {
       if (attempt < maxAttempts && retryable(e)) {
-        const delay = Math.min(2000, Math.pow(2, attempt - 1) * 300);
+        const baseDelay = e.status === 429 && e.retryAfter > 0
+          ? e.retryAfter * 1000
+          : Math.min(2000, Math.pow(2, attempt - 1) * 300);
         const jitter = Math.random() * 200;
-        return new Promise(function (resolve) { setTimeout(resolve, delay + jitter); })
+        return new Promise(function (resolve) { setTimeout(resolve, baseDelay + jitter); })
           .then(function () { return getJSON(path, timeoutMs, attempt + 1); });
       }
       throw e;
@@ -167,7 +171,8 @@
       high: toNum(raw.high),
       low: toNum(raw.low),
       state: raw.marketState || 'open',
-      stale: !!raw.stale
+      stale: !!raw.stale,
+      origin: raw.source || null
     };
   }
 
@@ -239,16 +244,17 @@
     if (!Number.isFinite(price) || price <= 0) return null;
     if (!Number.isFinite(ts) || !Number.isFinite(tfMs) || tfMs <= 0) return null;
     const last = bars[bars.length - 1];
-    const vol = Number.isFinite(volume) && volume >= 0 ? volume : 1;
+    const vol = Number.isFinite(volume) && volume >= 0 ? volume : 0;
 
     if (ts >= last.t + tfMs) {
       last.live = false;
       const newBarT = Math.floor(ts / tfMs) * tfMs;
+      const openRef = Number.isFinite(last.c) && last.c > 0 ? last.c : price;
       bars.push({
         t: newBarT,
-        o: price,
-        h: price,
-        l: price,
+        o: openRef,
+        h: Math.max(price, openRef),
+        l: Math.min(price, openRef),
         c: price,
         v: vol,
         live: true
@@ -262,7 +268,7 @@
     if (price > last.h) last.h = price;
     if (price < last.l) last.l = price;
     last.c = price;
-    last.v += vol;
+    if (vol > 0) last.v += vol;
     return 'upd';
   }
 
@@ -282,8 +288,8 @@
     let pollInFlight = false;
     let lastTickAt = 0;
     let lastError = null;
-    const paused = {};
-    const reported = {};
+    let paused = {};
+    let reported = {};
 
     function active() {
       const now = Date.now();
@@ -360,6 +366,11 @@
       });
     }
 
+    function resetSubscriptions() {
+      paused = {};
+      reported = {};
+    }
+
     function startSignalR() {
       if (!G.signalR || !active().length) return Promise.resolve(false);
       try {
@@ -376,6 +387,7 @@
         });
 
         conn.onreconnected(function () {
+          resetSubscriptions();
           conn.invoke('Subscribe', feedList())
             .then(function () {
               setMode('live');
@@ -449,6 +461,7 @@
         if (conn) { try { conn.stop(); } catch (e) { void 0; } conn = null; }
         backoffUntil = 0;
         pollInFlight = false;
+        resetSubscriptions();
         this.start();
       }
     };

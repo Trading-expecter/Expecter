@@ -61,7 +61,7 @@ window.AT.smcEngine = (function (I) {
       label: 'Escaneando',
       direction: direction || 0,
       trend: 'Débil',
-      grade: 'Débil',
+      grade: null,
       reasons: [reason],
       breakdown: {},
       zones: { ob: null, fvg: null, ote: null, allOBs: [], allFVGs: [] },
@@ -90,6 +90,7 @@ window.AT.smcEngine = (function (I) {
       label: 'Escaneando',
       direction: direction,
       trend: 'Débil',
+      grade: null,
       reasons: [],
       breakdown: {},
       zones: { ob: null, fvg: null, ote: null, allOBs: obs, allFVGs: fvgs },
@@ -225,8 +226,7 @@ window.AT.smcEngine = (function (I) {
       vetoed = true;
     }
 
-    if (confidence < DEFAULT_MIN_CONFIDENCE) {
-      // Si la confianza es muy baja, penalizamos pero no bloqueamos
+    if (!vetoed && confidence < DEFAULT_MIN_CONFIDENCE) {
       result.score = result.score * 0.5;
     }
 
@@ -235,7 +235,7 @@ window.AT.smcEngine = (function (I) {
       result.breakdown = { vetoed: { value: 0, weighted: 0, reason: 'Score vetado' } };
       result.reasons = result.vetoes.map(function (v) { return '🚫 ' + v; });
       result.vetoed = true;
-      result.grade = 'Débil';
+      result.grade = null;
       result.label = 'Sin confluencia';
       result.trend = 'Débil';
       return result;
@@ -247,14 +247,14 @@ window.AT.smcEngine = (function (I) {
         grade = 'Moderada';
         result.vetoes.push('Score alto sin zona: rebajado a Moderada.');
       } else if (result.activeComponents < minComp) {
-        grade = 'Débil';
+        grade = null;
         result.vetoes.push('Score alto con ' + result.activeComponents + ' componente(s) < ' + minComp + '.');
       } else {
         grade = 'Alta';
       }
     } else if (result.score >= th.medium) {
       if (result.activeComponents < minComp) {
-        grade = 'Débil';
+        grade = null;
         result.vetoes.push('Solo ' + result.activeComponents + ' componente(s) activo(s). Mínimo ' + minComp + ' para Moderada.');
       } else {
         grade = 'Moderada';
@@ -269,8 +269,11 @@ window.AT.smcEngine = (function (I) {
     } else if (grade === 'Moderada') {
       result.label = 'Entrada Moderada';
       result.trend = 'Media';
-    } else {
+    } else if (grade === 'Débil') {
       result.label = 'Sin confluencia suficiente';
+      result.trend = 'Débil';
+    } else {
+      result.label = 'Sin confluencia';
       result.trend = 'Débil';
     }
 
@@ -282,6 +285,10 @@ window.AT.smcEngine = (function (I) {
   function evaluate(bars, direction, context) {
     context = context || {};
     direction = direction === 1 || direction === -1 ? direction : 0;
+
+    if (direction === 0) {
+      return emptyResult(0, 'Sin dirección definida por el consenso.', context);
+    }
 
     if (!bars || bars.length < 15) {
       return emptyResult(direction, 'Historial insuficiente (mínimo 15 velas).', context);
@@ -310,29 +317,11 @@ window.AT.smcEngine = (function (I) {
     const sweeps = liquidity.detectSweeps(bars, pivots, atr, { allowBidirectional: true });
     const obs = zones.detectOrderBlocks(bars, atr, null);
     const fvgs = zones.detectFVG(bars, atr, null);
-    const ote = direction !== 0
-      ? oteModule.calculateOTE(bars, pivots, direction, atr)
-      : null;
+    const ote = oteModule.calculateOTE(bars, pivots, direction, atr);
 
     const w = weights();
-
-    if (direction === 1 || direction === -1) {
-      const res = evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w);
-      return applyVetoesAndGrade(res);
-    }
-
-    const oteLong = oteModule.calculateOTE(bars, pivots, 1, atr);
-    const oteShort = oteModule.calculateOTE(bars, pivots, -1, atr);
-
-    const resLong = evaluateDirection(bars, 1, context, atr, structure, sweeps, obs, fvgs, oteLong, w);
-    const resShort = evaluateDirection(bars, -1, context, atr, structure, sweeps, obs, fvgs, oteShort, w);
-
-    let winner;
-    if (resLong.score > resShort.score) winner = resLong;
-    else if (resShort.score > resLong.score) winner = resShort;
-    else return emptyResult(0, 'Evaluación bidireccional sin ventaja.', context);
-
-    return applyVetoesAndGrade(winner);
+    const res = evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w);
+    return applyVetoesAndGrade(res);
   }
 
   return {
