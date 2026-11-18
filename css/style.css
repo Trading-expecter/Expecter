@@ -28,9 +28,10 @@
   --sell: #fb7185;
   --ssell: #f43f5e;
 
-  --ema1: #f0b90b;
-  --ema2: #5b8def;
+  --ema1: #f59e0b;
+  --ema2: #00b8d9;
   --ema3: #a855f7;
+  --vwap: #eab308;
 
   --grid: rgba(255, 255, 255, 0.04);
 
@@ -394,6 +395,20 @@ button:focus-visible, a:focus-visible {
   color: var(--text-1);
 }
 
+.verdict-sizing {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: 1px solid rgba(91, 141, 239, 0.25);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-hi);
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
 .gauge-card { grid-column: span 4; }
 
 .gauge-card svg {
@@ -476,6 +491,18 @@ button:focus-visible, a:focus-visible {
   background: var(--accent);
   border-radius: 2px;
   transition: width 400ms ease, background-color 400ms ease;
+}
+
+.smc-sequence {
+  margin-bottom: var(--space-2);
+  padding: 6px 10px;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: var(--radius-sm);
+  background: rgba(16, 185, 129, 0.06);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--up);
+  letter-spacing: 0.02em;
 }
 
 .smc-reasons {
@@ -604,6 +631,7 @@ button:focus-visible, a:focus-visible {
 .k.e1 { background: var(--ema1); }
 .k.e2 { background: var(--ema2); }
 .k.e3 { background: var(--ema3); }
+.k.vwap { background: var(--vwap); }
 
 .drawing-menu {
   position: absolute;
