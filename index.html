@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0b0e14">
-  <meta name="description" content="Market Consensus PRO — Análisis técnico multi-temporal, confluencia SMC y gestión de riesgo institucional.">
+  <meta name="description" content="SMC Momentum Fusion — Análisis institucional multi-temporal para XAUUSD M15. Confluencia SMC, momentum y gestión de riesgo.">
   <meta name="format-detection" content="telephone=no">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <title>Market Consensus PRO</title>
+  <title>SMC Momentum Fusion · XAUUSD M15</title>
   <link rel="stylesheet" href="css/style.css">
   <style>
     .skip-link{position:absolute;top:-100px;left:10px;z-index:9999;padding:12px 18px;background:#5b8def;color:#0b0e14;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;}
@@ -24,18 +24,18 @@
 
 <noscript>
   <div style="padding:48px 24px;text-align:center;color:#e6edf3;background:#0b0e14;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px;">
-    <h1 style="margin:0;font-size:22px;font-weight:700;">Market Consensus PRO</h1>
+    <h1 style="margin:0;font-size:22px;font-weight:700;">SMC Momentum Fusion</h1>
     <p style="margin:0;max-width:480px;font-size:14px;color:#8b98ab;">Este panel requiere JavaScript habilitado para cargar datos de mercado, calcular el consenso multi-temporal y renderizar el gráfico.</p>
   </div>
 </noscript>
 
 <header class="top" role="banner">
   <div class="top-inner">
-    <div class="brand" aria-label="Market Consensus PRO">
-      <span class="brand-mark" aria-hidden="true">M</span>
+    <div class="brand" aria-label="SMC Momentum Fusion">
+      <span class="brand-mark" aria-hidden="true">S</span>
       <span class="brand-text">
-        <strong>Market Consensus</strong>
-        <span class="brand-pro">PRO</span>
+        <strong>SMC Momentum</strong>
+        <span class="brand-pro">FUSION</span>
       </span>
     </div>
     <nav class="symbols" id="symbolBar" role="toolbar" aria-label="Seleccionar mercado"></nav>
@@ -67,6 +67,7 @@
     <div class="verdict-content" role="status" aria-live="polite">
       <div id="verdictBadge" class="verdict-badge wait">ESPERAR</div>
       <p id="verdictReason" class="verdict-reason">Analizando condiciones de mercado...</p>
+      <div id="verdictSizing" class="verdict-sizing" hidden></div>
     </div>
   </section>
 
@@ -97,6 +98,7 @@
     <div class="smc-bar-bg" aria-hidden="true">
       <div id="smcBarFill" class="smc-bar-fill" style="width:0%"></div>
     </div>
+    <div id="smcSequence" class="smc-sequence" hidden></div>
     <ul id="smcReasons" class="smc-reasons">
       <li class="muted">Esperando datos...</li>
     </ul>
@@ -161,11 +163,12 @@
         <span class="tool-icon">🗑</span><span>Borrar todo</span>
       </button>
     </div>
-    <canvas id="chart" role="img" tabindex="0" aria-label="Gráfico de velas japonesas con EMA 20, 50 y 200, y zonas de Order Blocks, Fair Value Gaps y OTE"></canvas>
+    <canvas id="chart" role="img" tabindex="0" aria-label="Gráfico de velas japonesas con EMA 9, 21, 50, VWAP y zonas de Order Blocks, Fair Value Gaps y OTE"></canvas>
     <div class="legend-ema muted small">
-      <span class="k e1"></span> EMA 20
-      <span class="k e2"></span> EMA 50
-      <span class="k e3"></span> EMA 200
+      <span class="k e1"></span> EMA 9
+      <span class="k e2"></span> EMA 21
+      <span class="k e3"></span> EMA 50
+      <span class="k vwap"></span> VWAP
     </div>
   </section>
 
@@ -192,7 +195,7 @@
 </main>
 
 <footer class="foot" role="contentinfo">
-  <p>Market Consensus PRO · Análisis técnico institucional</p>
+  <p>SMC Momentum Fusion · XAUUSD M15 · Análisis institucional</p>
   <p>Fines educativos. No constituye asesoramiento financiero.</p>
 </footer>
 
