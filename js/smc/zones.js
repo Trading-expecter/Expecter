@@ -4,14 +4,14 @@ window.AT.smc = window.AT.smc || {};
 window.AT.smc.zones = (function () {
   'use strict';
 
-  const DEFAULT_OB_ATR_MULT = 1.8;
+  const DEFAULT_OB_ATR_MULT = 1.5;
+  const DEFAULT_OB_MIDLINE_RATIO = 0.5;
   const DEFAULT_OB_MAX_ZONES = 3;
   const DEFAULT_OB_MAX_AGE_BARS = 150;
   const DEFAULT_FVG_MIN_ATR_MULT = 0.30;
+  const DEFAULT_FVG_MIDDLE_BODY_ATR_MULT = 0.5;
   const DEFAULT_FVG_MAX_AGE = 60;
   const DEFAULT_FVG_MAX_ZONES = 3;
-  const DEFAULT_OB_MIDLINE_RATIO = 0.5;
-  const DEFAULT_FVG_MIDDLE_BODY_ATR_MULT = 0.5;
   const OB_STRENGTH_CEILING_ATR = 5;
   const FVG_STRENGTH_CEILING_ATR = 3;
 
@@ -23,6 +23,10 @@ window.AT.smc.zones = (function () {
     return cfg().obAtrMult != null ? cfg().obAtrMult : DEFAULT_OB_ATR_MULT;
   }
 
+  function obMidlineRatio() {
+    return cfg().obMidlineRatio != null ? cfg().obMidlineRatio : DEFAULT_OB_MIDLINE_RATIO;
+  }
+
   function obMaxZones() {
     return cfg().obMaxZones != null ? cfg().obMaxZones : DEFAULT_OB_MAX_ZONES;
   }
@@ -31,12 +35,12 @@ window.AT.smc.zones = (function () {
     return cfg().obMaxAgeBars != null ? cfg().obMaxAgeBars : DEFAULT_OB_MAX_AGE_BARS;
   }
 
-  function obMidlineRatio() {
-    return cfg().obMidlineRatio != null ? cfg().obMidlineRatio : DEFAULT_OB_MIDLINE_RATIO;
-  }
-
   function fvgMinMult() {
     return cfg().fvgMinAtrMult != null ? cfg().fvgMinAtrMult : DEFAULT_FVG_MIN_ATR_MULT;
+  }
+
+  function fvgMiddleBodyAtrMult() {
+    return cfg().fvgMiddleBodyAtrMult != null ? cfg().fvgMiddleBodyAtrMult : DEFAULT_FVG_MIDDLE_BODY_ATR_MULT;
   }
 
   function fvgMaxAge() {
@@ -45,10 +49,6 @@ window.AT.smc.zones = (function () {
 
   function fvgMaxZones() {
     return cfg().fvgMaxZones != null ? cfg().fvgMaxZones : DEFAULT_FVG_MAX_ZONES;
-  }
-
-  function fvgMiddleBodyAtrMult() {
-    return cfg().fvgMiddleBodyAtrMult != null ? cfg().fvgMiddleBodyAtrMult : DEFAULT_FVG_MIDDLE_BODY_ATR_MULT;
   }
 
   function resolveAtrArray(bars, atr) {
@@ -65,31 +65,27 @@ window.AT.smc.zones = (function () {
     if (!Array.isArray(atr) || !atr.length) return null;
 
     const out = new Array(n).fill(null);
-    let offset;
-    if (atr.length === n) {
-      offset = 0;
-    } else if (atr.length < n) {
-      offset = n - atr.length;
-    } else {
-      offset = -(atr.length - n);
-    }
-
+    const offset = atr.length <= n ? n - atr.length : 0;
     let lastValid = null;
+
     for (let i = 0; i < n; i++) {
-      const src = atr[i - offset];
-      const v = src;
-      if (v != null && Number.isFinite(v) && v > 0) {
-        out[i] = v;
-        lastValid = v;
+      const src = i >= offset ? atr[i - offset] : null;
+      if (src != null && Number.isFinite(src) && src > 0) {
+        out[i] = src;
+        lastValid = src;
       } else if (lastValid != null) {
         out[i] = lastValid;
       }
     }
 
+    let firstValid = null;
     for (let i = 0; i < n; i++) {
-      if (out[i] == null) {
-        const nextValid = atr.find(function (x) { return x != null && Number.isFinite(x) && x > 0; });
-        out[i] = nextValid != null ? nextValid : 0;
+      if (out[i] != null) { firstValid = out[i]; break; }
+    }
+    if (firstValid != null) {
+      for (let i = 0; i < n; i++) {
+        if (out[i] == null) out[i] = firstValid;
+        else break;
       }
     }
 
@@ -328,6 +324,7 @@ window.AT.smc.zones = (function () {
 
   function findActiveZone(zones, price, direction) {
     if (!zones || !zones.length) return null;
+    if (!Number.isFinite(price)) return null;
     const filterDir = direction === 1 || direction === -1;
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i];

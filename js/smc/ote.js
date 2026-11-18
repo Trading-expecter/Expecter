@@ -188,6 +188,8 @@ window.AT.smc.ote = (function () {
   }
 
   function calculateOTE(bars, pivots, direction, atr, opts) {
+    if (!bars || !bars.length) return null;
+    if (direction !== 1 && direction !== -1) return null;
     const swing = findSwing(bars, pivots, direction, atr, opts);
     if (!swing) return null;
 

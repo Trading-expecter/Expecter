@@ -4,8 +4,8 @@ window.AT.smc = window.AT.smc || {};
 window.AT.smc.structure = (function (I) {
   'use strict';
 
-  const DEFAULT_LOOKBACK = 5;
-  const DEFAULT_MSS_WINDOW = 15;
+  const DEFAULT_LOOKBACK = 3;
+  const DEFAULT_MSS_WINDOW = 12;
   const PIVOT_TOLERANCE_ATR_MULT = 0.10;
   const MIN_PIVOT_STRENGTH = 0.2;
   const MIN_BODY_ATR_MULT = 0.3;
@@ -15,11 +15,17 @@ window.AT.smc.structure = (function (I) {
   }
 
   function lookbackDefault() {
-    return cfg().pivotLookback || DEFAULT_LOOKBACK;
+    const v = cfg().pivotLookback;
+    return v != null && v > 0 ? v : DEFAULT_LOOKBACK;
   }
 
   function mssWindowDefault() {
-    return cfg().mssWindow || DEFAULT_MSS_WINDOW;
+    const v = cfg().mssWindow;
+    return v != null && v > 0 ? v : DEFAULT_MSS_WINDOW;
+  }
+
+  function atrPeriodDefault() {
+    return cfg().atrPeriod || 14;
   }
 
   function toleranceFor(bars) {
@@ -34,11 +40,11 @@ window.AT.smc.structure = (function (I) {
 
   function computeAtrInternal(bars) {
     if (!I || typeof I.atr !== 'function') return 0;
-    if (!bars || bars.length < 15) return 0;
+    if (!bars || bars.length < atrPeriodDefault() + 1) return 0;
     const highs = bars.map(function (b) { return b.h; });
     const lows = bars.map(function (b) { return b.l; });
     const closes = bars.map(function (b) { return b.c; });
-    const arr = I.atr(highs, lows, closes, 14);
+    const arr = I.atr(highs, lows, closes, atrPeriodDefault());
     for (let i = arr.length - 1; i >= 0; i--) {
       const v = arr[i];
       if (v != null && Number.isFinite(v) && v > 0) return v;
@@ -92,7 +98,7 @@ window.AT.smc.structure = (function (I) {
     return { highs: highs, lows: lows };
   }
 
-  function previousTrend(bars, pivots, upToIndex) {
+  function previousTrend(pivots, upToIndex) {
     if (!pivots || !pivots.highs.length || !pivots.lows.length) return 0;
     let lastHigh = null;
     let lastLow = null;
@@ -153,15 +159,15 @@ window.AT.smc.structure = (function (I) {
     }
 
     if (bullishPivot && bullishPivot.strength >= MIN_PIVOT_STRENGTH && lastClose > bullishPivot.price) {
-      const prevTrend = previousTrend(bars, pivots, bullishPivot.index);
+      const prevTrend = previousTrend(pivots, bullishPivot.index);
       if (prevTrend === 0) return null;
 
       const breakoutIdx = findBreakoutBar(bars, bullishPivot.index, bullishPivot.price, 1);
       if (breakoutIdx < 0) return null;
 
       if (atr > 0) {
-        const breakoutBar = bars[breakoutIdx];
-        const body = Math.abs(breakoutBar.c - breakoutBar.o);
+        const bb = bars[breakoutIdx];
+        const body = Math.abs(bb.c - bb.o);
         if (body < MIN_BODY_ATR_MULT * atr) return null;
       }
 
@@ -182,15 +188,15 @@ window.AT.smc.structure = (function (I) {
     }
 
     if (bearishPivot && bearishPivot.strength >= MIN_PIVOT_STRENGTH && lastClose < bearishPivot.price) {
-      const prevTrend = previousTrend(bars, pivots, bearishPivot.index);
+      const prevTrend = previousTrend(pivots, bearishPivot.index);
       if (prevTrend === 0) return null;
 
       const breakoutIdx = findBreakoutBar(bars, bearishPivot.index, bearishPivot.price, -1);
       if (breakoutIdx < 0) return null;
 
       if (atr > 0) {
-        const breakoutBar = bars[breakoutIdx];
-        const body = Math.abs(breakoutBar.c - breakoutBar.o);
+        const bb = bars[breakoutIdx];
+        const body = Math.abs(bb.c - bb.o);
         if (body < MIN_BODY_ATR_MULT * atr) return null;
       }
 

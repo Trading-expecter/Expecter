@@ -6,7 +6,7 @@ window.AT.smc.liquidity = (function () {
 
   const DEFAULT_SWEEP_MIN_ATR_MULT = 0.35;
   const DEFAULT_SWEEP_MAX_ATR_MULT = 1.8;
-  const DEFAULT_SWEEP_WINDOW = 5;
+  const DEFAULT_SWEEP_WINDOW = 4;
   const DEFAULT_SWEEP_REJECTION_MIN = 0.5;
   const DEFAULT_EQ_TOLERANCE_ATR_MULT = 0.10;
   const DEFAULT_LOOKBACK_PIVOTS = 5;
@@ -171,7 +171,12 @@ window.AT.smc.liquidity = (function () {
     opts = opts || {};
     const atrVal = resolveAtr(atr);
     const tolerance = atrVal * (opts.toleranceMult != null ? opts.toleranceMult : eqToleranceDefault());
-    const result = { highs: [], lows: [], toleranceAtr: atrVal > 0 ? tolerance / atrVal : 0, tolerance: tolerance };
+    const result = {
+      highs: [],
+      lows: [],
+      tolerance: tolerance,
+      toleranceAtr: atrVal > 0 ? tolerance / atrVal : 0
+    };
     if (!(tolerance > 0) || !pivots) return result;
 
     function group(list) {
