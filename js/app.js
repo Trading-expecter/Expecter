@@ -21,12 +21,28 @@
     analysisTimer: null,
     lastAnalysisAt: 0,
     signalLog: [],
-    lastVerdictState: 'wait',
     currentTool: 'cursor',
     drawMenuOpen: false,
     tickBuffer: new Map(),
     rafId: 0,
-    gapRefill: {}
+    gapRefill: {},
+    verdict: {
+      committed: {
+        state: 'wait',
+        label: 'ESPERAR',
+        reason: 'Iniciando...',
+        risk: null,
+        direction: 0,
+        score: 0,
+        confidence: 0,
+        at: 0
+      },
+      pending: {
+        state: null,
+        count: 0,
+        firstSeenAt: 0
+      }
+    }
   };
 
   let chart = null;
@@ -57,6 +73,94 @@
     if (dir === 0 || dir == null) return 0;
     const s = Math.max(0, Math.min(100, score || 0));
     return (s / 100) * 90 * dir;
+  }
+
+  function verdictCfg() {
+    return CFG.verdict || {};
+  }
+
+  function resetVerdict() {
+    state.verdict.committed = {
+      state: 'wait',
+      label: 'ESPERAR',
+      reason: 'Reiniciando análisis...',
+      risk: null,
+      direction: 0,
+      score: 0,
+      confidence: 0,
+      at: 0
+    };
+    state.verdict.pending = { state: null, count: 0, firstSeenAt: 0 };
+  }
+
+  function committedDirection() {
+    const s = state.verdict.committed.state;
+    if (s === 'buy') return 1;
+    if (s === 'sell') return -1;
+    return 0;
+  }
+
+  function commitVerdict(proposed, now) {
+    const vCfg = verdictCfg();
+    const minHoldMs = vCfg.minHoldMs != null ? vCfg.minHoldMs : 45000;
+    const minConfirmations = vCfg.minConfirmations != null ? vCfg.minConfirmations : 2;
+    const minPendingMs = vCfg.minPendingMs != null ? vCfg.minPendingMs : 5000;
+    const v = state.verdict;
+    const committed = v.committed;
+
+    if (!proposed.marketOpen) {
+      v.committed = {
+        state: 'wait',
+        label: 'ESPERAR',
+        reason: proposed.reason || 'Mercado cerrado.',
+        risk: null,
+        direction: 0,
+        score: proposed.score || 0,
+        confidence: 0,
+        at: now
+      };
+      v.pending = { state: null, count: 0, firstSeenAt: 0 };
+      return;
+    }
+
+    if (proposed.state === committed.state) {
+      committed.reason = proposed.reason;
+      committed.risk = proposed.risk;
+      committed.direction = proposed.direction;
+      committed.score = proposed.score;
+      committed.confidence = proposed.confidence;
+      v.pending = { state: null, count: 0, firstSeenAt: 0 };
+      return;
+    }
+
+    if (v.pending.state !== proposed.state) {
+      v.pending.state = proposed.state;
+      v.pending.count = 1;
+      v.pending.firstSeenAt = now;
+      return;
+    }
+
+    v.pending.count++;
+
+    const sinceCommit = now - committed.at;
+    const sincePending = now - v.pending.firstSeenAt;
+    const enoughCount = v.pending.count >= minConfirmations;
+    const enoughHold = sinceCommit >= minHoldMs;
+    const enoughPending = sincePending >= minPendingMs;
+
+    if (enoughCount && enoughHold && enoughPending) {
+      v.committed = {
+        state: proposed.state,
+        label: proposed.label,
+        reason: proposed.reason,
+        risk: proposed.risk,
+        direction: proposed.direction,
+        score: proposed.score,
+        confidence: proposed.confidence,
+        at: now
+      };
+      v.pending = { state: null, count: 0, firstSeenAt: 0 };
+    }
   }
 
   function flushTicks() {
@@ -195,20 +299,13 @@
   }
 
   function renderVerdict() {
-    const a = state.analysis;
     const badge = $('verdictBadge');
     const reason = $('verdictReason');
+    const c = state.verdict.committed;
 
-    if (!a) {
-      badge.textContent = 'ESPERAR';
-      badge.className = 'verdict-badge wait';
-      reason.textContent = 'Sincronizando motor de análisis...';
-      return;
-    }
-
-    badge.textContent = a.verdictLabel;
-    badge.className = 'verdict-badge ' + a.verdictState;
-    reason.textContent = a.verdictReason || '';
+    badge.textContent = c.label || 'ESPERAR';
+    badge.className = 'verdict-badge ' + (c.state || 'wait');
+    reason.textContent = c.reason || 'Analizando condiciones...';
   }
 
   function renderSMC() {
@@ -395,38 +492,44 @@
     return null;
   }
 
-  function logSignalIfChanged(analysis) {
-    if (!analysis) return;
-    const prev = state.lastVerdictState;
-    const curr = analysis.verdictState;
+  function logSignalIfChanged(now) {
+    const c = state.verdict.committed;
+    if (c.state !== 'buy' && c.state !== 'sell') return;
+    if (!c.risk || !c.risk.valid) return;
 
-    if (curr !== prev && (curr === 'buy' || curr === 'sell') && analysis.verdictRisk) {
-      const entryPrice = currentEntryPrice();
-      if (entryPrice != null) {
-        state.signalLog.push({
-          ts: Date.now(),
-          symbol: state.symbol,
-          tf: analysis.entryTf,
-          direction: analysis.overallDirection,
-          entryPrice: entryPrice,
-          stopPrice: analysis.verdictRisk.stop,
-          targetPrice: analysis.verdictRisk.target,
-          rr: analysis.verdictRisk.rr,
-          score: analysis.consensusScore,
-          confidence: analysis.confidence,
-          smcGrade: analysis.smcGrade,
-          smcScore: analysis.smcScore
-        });
-        if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
-      }
-    }
-    state.lastVerdictState = curr;
+    const last = state.signalLog[state.signalLog.length - 1];
+    if (last && last.ts === c.at && last.direction === c.direction) return;
+
+    const entryPrice = currentEntryPrice();
+    if (entryPrice == null) return;
+
+    state.signalLog.push({
+      ts: now,
+      symbol: state.symbol,
+      tf: state.tf,
+      direction: c.direction,
+      entryPrice: entryPrice,
+      stopPrice: c.risk.stop,
+      targetPrice: c.risk.target,
+      rr: c.risk.rr,
+      score: c.score,
+      confidence: c.confidence,
+      smcGrade: state.analysis ? state.analysis.smcGrade : null,
+      smcScore: state.analysis ? state.analysis.smcScore : null
+    });
+    if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
   }
 
   function runAnalysis() {
-    state.lastAnalysisAt = Date.now();
+    const now = Date.now();
+    state.lastAnalysisAt = now;
 
-    const res = A.analyze(state.bars, { currentTf: state.tf, symbol: state.symbol });
+    const res = A.analyze(state.bars, {
+      currentTf: state.tf,
+      symbol: state.symbol,
+      previousDirection: committedDirection()
+    });
+
     const entryTf = res.entryTf || state.tf;
     const entryBarsRaw = state.bars[entryTf];
 
@@ -456,7 +559,23 @@
 
     state.analysis = A.applySmc(res, state.smcResult);
 
-    logSignalIfChanged(state.analysis);
+    const proposed = {
+      state: state.analysis.verdictState,
+      label: state.analysis.verdictLabel,
+      reason: state.analysis.verdictReason,
+      risk: state.analysis.verdictRisk,
+      direction: state.analysis.overallDirection,
+      score: state.analysis.consensusScore,
+      confidence: state.analysis.confidence,
+      marketOpen: state.analysis.marketOpen
+    };
+
+    const before = state.verdict.committed.state;
+    commitVerdict(proposed, now);
+    if (state.verdict.committed.state !== before) {
+      logSignalIfChanged(now);
+    }
+
     renderAll();
   }
 
@@ -521,9 +640,9 @@
     state.bars = {};
     state.analysis = null;
     state.smcResult = null;
-    state.lastVerdictState = 'wait';
     state.gapRefill = {};
     delete state.ticks[old];
+    resetVerdict();
 
     Array.prototype.forEach.call($('symbolBar').children, function (b) {
       if (b.dataset.sym === sym) {
@@ -628,6 +747,7 @@
       const b = e.target.closest('button[data-tf]');
       if (!b) return;
       state.tf = b.dataset.tf;
+      resetVerdict();
       renderMtf();
       renderChart();
       scheduleAnalysis(true);
@@ -873,6 +993,7 @@
   AT.app = {
     getSignalLog: function () { return state.signalLog.slice(); },
     getState: function () { return state; },
+    getVerdict: function () { return state.verdict.committed; },
     auditSignals: auditSignals
   };
 })();

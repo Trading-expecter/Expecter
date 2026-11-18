@@ -107,8 +107,8 @@
     const emaSlowP = rCfg.emaSlow || 21;
     const adxPeriod = rCfg.adxPeriod || 14;
     const returnLb = rCfg.returnLookback || 10;
-    const emaSepMin = rCfg.emaSeparationMinPct || 0.05;
-    const returnMin = rCfg.returnMinPct || 0.02;
+    const emaSepMin = rCfg.emaSeparationMinPct || 0.15;
+    const returnMin = rCfg.returnMinPct || 0.05;
 
     const fast = I.ema(closes, emaFastP);
     const slow = I.ema(closes, emaSlowP);
@@ -241,6 +241,50 @@
     return alerts;
   }
 
+  function volumeConfirms(bars) {
+    if (!bars || bars.length < 21) return true;
+    const vols = bars.map(function (b) { return b.v || 0; });
+    const last20 = vols.slice(-21, -1);
+    const avg = last20.reduce(function (a, b) { return a + b; }, 0) / 20;
+    if (!(avg > 0)) return true;
+    const last = vols[vols.length - 1];
+    return last >= avg * 0.8;
+  }
+
+  function applyHigherTfFilter(direction, perTf) {
+    if (direction === 0) return 0;
+    const biasList = biasTfs();
+    const highTf = biasList[biasList.length - 1];
+    const midTf = biasList.length > 1 ? biasList[0] : null;
+    const highData = perTf[highTf];
+    if (!highData || !highData.regimeValid) return direction;
+    const midData = midTf ? perTf[midTf] : null;
+
+    if (direction === 1 && highData.direction === -1) {
+      if (!midData || !midData.regimeValid || midData.direction !== 1) return 0;
+    }
+    if (direction === -1 && highData.direction === 1) {
+      if (!midData || !midData.regimeValid || midData.direction !== -1) return 0;
+    }
+    return direction;
+  }
+
+  function applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold) {
+    if (previousDirection === 1) {
+      if (buyShare >= exitThreshold) return 1;
+      if (buyShare <= 1 - enterThreshold) return -1;
+      return 1;
+    }
+    if (previousDirection === -1) {
+      if (buyShare <= 1 - exitThreshold) return -1;
+      if (buyShare >= enterThreshold) return 1;
+      return -1;
+    }
+    if (buyShare >= enterThreshold) return 1;
+    if (buyShare <= 1 - enterThreshold) return -1;
+    return 0;
+  }
+
   function emptyResult(reason, sessionLabel, marketOpen, symbolFamily) {
     return {
       consensusScore: 0,
@@ -248,6 +292,7 @@
       consensusText: LABELS.neutral,
       confidence: 0,
       overallDirection: 0,
+      rawDirection: 0,
       perTf: {},
       macroTrend: '—',
       macroMomentum: '—',
@@ -264,6 +309,8 @@
       sessionLabel: sessionLabel || SESSION_LABELS.closed,
       symbolFamily: symbolFamily || 'unknown',
       entryTf: null,
+      volumeOk: true,
+      higherTfOk: true,
       conclusion: reason || 'Analizando mercado...'
     };
   }
@@ -275,11 +322,15 @@
     const riskCfg = c.risk || {};
     const exCfg = c.exhaustion || {};
     const thresholds = consensusCfg.thresholds || { strong: 60, moderate: 40 };
-    const minValidTfs = consensusCfg.minimumValidTfs || 1;
-    const weightedMajority = consensusCfg.weightedMajority || 0.50;
+    const minValidTfs = consensusCfg.minimumValidTfs || 2;
+    const enterThreshold = consensusCfg.enterThreshold != null ? consensusCfg.enterThreshold : 0.60;
+    const exitThreshold = consensusCfg.exitThreshold != null ? consensusCfg.exitThreshold : 0.45;
 
     const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '5m';
     const symbol = opts.symbol || 'XAUUSD';
+    const previousDirection = opts.previousDirection === 1 || opts.previousDirection === -1
+      ? opts.previousDirection
+      : 0;
 
     const now = new Date();
     const marketState = getMarketState(symbol, now);
@@ -322,13 +373,15 @@
     const totalWeight = buyWeight + sellWeight;
     const buyShare = totalWeight > 0 ? buyWeight / totalWeight : 0.5;
 
-    let overallDirection = 0;
-    if (buyShare > weightedMajority) overallDirection = 1;
-    else if (buyShare < 1 - weightedMajority) overallDirection = -1;
+    const rawDirection = applyHysteresis(buyShare, 0, enterThreshold, exitThreshold);
+    let overallDirection = applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold);
 
-    if (overallDirection === 0) {
-      const sorted = valid.slice().sort(function (a, b) { return b.data.weight - a.data.weight; });
-      if (sorted.length > 0) overallDirection = sorted[0].data.direction;
+    const beforeFilter = overallDirection;
+    overallDirection = applyHigherTfFilter(overallDirection, perTf);
+    const higherTfOk = (beforeFilter === 0) || (overallDirection === beforeFilter);
+
+    if (overallDirection === 0 && beforeFilter === 0) {
+      overallDirection = applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold);
     }
 
     let sumAllEvidence = 0;
@@ -386,6 +439,8 @@
       alerts = detectExhaustion(entryBars, overallDirection, exCfg);
     }
 
+    const volumeOk = volumeConfirms(entryBars);
+
     const entryData = perTf[entryTf] || valid[0].data;
     const currentPrice = entryData.price;
     const levels = findNearestLevels(entryBars, currentPrice, 3);
@@ -398,7 +453,13 @@
     if (!marketState.open) {
       verdictReason = 'Mercado cerrado (' + marketState.family + ').';
     } else if (overallDirection === 0) {
-      verdictReason = 'Mercado lateral. Se busca ruptura de estructura.';
+      verdictReason = previousDirection !== 0
+        ? 'Sin confirmación de giro. Manteniendo dirección previa.'
+        : 'Mercado lateral. Se busca ruptura de estructura.';
+    } else if (!higherTfOk) {
+      verdictReason = 'Señal contra tendencia de mayor timeframe. Esperando confirmación.';
+    } else if (!volumeOk) {
+      verdictReason = 'Vela de señal sin volumen suficiente. Esperando confirmación.';
     } else if (!risk) {
       verdictReason = 'Calculando niveles de entrada perfectos...';
     } else if (!risk.valid) {
@@ -423,6 +484,8 @@
       consensusText: LABELS[consensusLabel],
       confidence: confidence,
       overallDirection: overallDirection,
+      rawDirection: rawDirection,
+      previousDirection: previousDirection,
       perTf: perTf,
       macroTrend: avgAdxAligned >= 25 ? 'Fuerte' : (avgAdxAligned >= 18 ? 'Moderada' : 'Débil'),
       macroMomentum: macroMomentum,
@@ -438,6 +501,8 @@
       sessionLabel: sessionLabel,
       symbolFamily: marketState.family,
       entryTf: entryTf,
+      volumeOk: volumeOk,
+      higherTfOk: higherTfOk,
       conclusion: conclusionParts.join(' ')
     };
   }
