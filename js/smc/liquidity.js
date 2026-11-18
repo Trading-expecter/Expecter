@@ -54,6 +54,15 @@ window.AT.smc.liquidity = (function () {
       : (bar.h - bar.c) / range;
   }
 
+  function isSweepInvalidated(bars, sweepIdx, pivotPrice, direction) {
+    for (let i = sweepIdx + 1; i < bars.length; i++) {
+      const b = bars[i];
+      if (direction === 1 && b.c < pivotPrice) return true;
+      if (direction === -1 && b.c > pivotPrice) return true;
+    }
+    return false;
+  }
+
   function detectBullishSweep(bars, pivot, atr, opts) {
     const minPenetration = atr * (opts.minPenetration != null ? opts.minPenetration : sweepMinMult());
     const maxPenetration = atr * (opts.maxPenetration != null ? opts.maxPenetration : sweepMaxMult());
@@ -70,6 +79,7 @@ window.AT.smc.liquidity = (function () {
       if (bar.c <= pivot.price) continue;
       const rej = rejectionRatio(bar, 1);
       if (rej < rejectionMin) continue;
+      if (isSweepInvalidated(bars, i, pivot.price, 1)) continue;
       return {
         direction: 1,
         level: pivot.price,
@@ -80,7 +90,7 @@ window.AT.smc.liquidity = (function () {
         penetrationAtr: atr > 0 ? penetration / atr : 0,
         rejectionRatio: rej,
         type: 'Bullish_Sweep',
-        valid: true
+        invalidated: false
       };
     }
     return null;
@@ -102,6 +112,7 @@ window.AT.smc.liquidity = (function () {
       if (bar.c >= pivot.price) continue;
       const rej = rejectionRatio(bar, -1);
       if (rej < rejectionMin) continue;
+      if (isSweepInvalidated(bars, i, pivot.price, -1)) continue;
       return {
         direction: -1,
         level: pivot.price,
@@ -112,7 +123,7 @@ window.AT.smc.liquidity = (function () {
         penetrationAtr: atr > 0 ? penetration / atr : 0,
         rejectionRatio: rej,
         type: 'Bearish_Sweep',
-        valid: true
+        invalidated: false
       };
     }
     return null;
@@ -158,8 +169,9 @@ window.AT.smc.liquidity = (function () {
 
   function findEqualLevels(pivots, atr, opts) {
     opts = opts || {};
-    const tolerance = resolveAtr(atr) * (opts.toleranceMult != null ? opts.toleranceMult : eqToleranceDefault());
-    const result = { highs: [], lows: [] };
+    const atrVal = resolveAtr(atr);
+    const tolerance = atrVal * (opts.toleranceMult != null ? opts.toleranceMult : eqToleranceDefault());
+    const result = { highs: [], lows: [], toleranceAtr: atrVal > 0 ? tolerance / atrVal : 0, tolerance: tolerance };
     if (!(tolerance > 0) || !pivots) return result;
 
     function group(list) {

@@ -10,6 +10,8 @@ window.AT.smc.zones = (function () {
   const DEFAULT_FVG_MIN_ATR_MULT = 0.30;
   const DEFAULT_FVG_MAX_AGE = 60;
   const DEFAULT_FVG_MAX_ZONES = 3;
+  const DEFAULT_OB_MIDLINE_RATIO = 0.5;
+  const DEFAULT_FVG_MIDDLE_BODY_ATR_MULT = 0.5;
   const OB_STRENGTH_CEILING_ATR = 5;
   const FVG_STRENGTH_CEILING_ATR = 3;
 
@@ -29,6 +31,10 @@ window.AT.smc.zones = (function () {
     return cfg().obMaxAgeBars != null ? cfg().obMaxAgeBars : DEFAULT_OB_MAX_AGE_BARS;
   }
 
+  function obMidlineRatio() {
+    return cfg().obMidlineRatio != null ? cfg().obMidlineRatio : DEFAULT_OB_MIDLINE_RATIO;
+  }
+
   function fvgMinMult() {
     return cfg().fvgMinAtrMult != null ? cfg().fvgMinAtrMult : DEFAULT_FVG_MIN_ATR_MULT;
   }
@@ -41,22 +47,52 @@ window.AT.smc.zones = (function () {
     return cfg().fvgMaxZones != null ? cfg().fvgMaxZones : DEFAULT_FVG_MAX_ZONES;
   }
 
+  function fvgMiddleBodyAtrMult() {
+    return cfg().fvgMiddleBodyAtrMult != null ? cfg().fvgMiddleBodyAtrMult : DEFAULT_FVG_MIDDLE_BODY_ATR_MULT;
+  }
+
   function resolveAtrArray(bars, atr) {
     const n = bars.length;
     if (atr == null) return null;
+
     if (typeof atr === 'number') {
       if (!Number.isFinite(atr) || atr <= 0) return null;
       const out = new Array(n);
       for (let i = 0; i < n; i++) out[i] = atr;
       return out;
     }
+
     if (!Array.isArray(atr) || !atr.length) return null;
-    if (atr.length === n) return atr;
-    const offset = n - atr.length;
-    const out = new Array(n);
-    for (let i = 0; i < n; i++) {
-      out[i] = i >= offset ? atr[i - offset] : null;
+
+    const out = new Array(n).fill(null);
+    let offset;
+    if (atr.length === n) {
+      offset = 0;
+    } else if (atr.length < n) {
+      offset = n - atr.length;
+    } else {
+      offset = -(atr.length - n);
     }
+
+    let lastValid = null;
+    for (let i = 0; i < n; i++) {
+      const src = atr[i - offset];
+      const v = src;
+      if (v != null && Number.isFinite(v) && v > 0) {
+        out[i] = v;
+        lastValid = v;
+      } else if (lastValid != null) {
+        out[i] = lastValid;
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (out[i] == null) {
+        const nextValid = atr.find(function (x) { return x != null && Number.isFinite(x) && x > 0; });
+        out[i] = nextValid != null ? nextValid : 0;
+      }
+    }
+
     return out;
   }
 
@@ -66,23 +102,49 @@ window.AT.smc.zones = (function () {
     return v != null && Number.isFinite(v) && v > 0 ? v : 0;
   }
 
-  function isMitigated(bars, zone, direction, fromIndex) {
+  function analyzeMitigation(bars, zone, direction, fromIndex) {
     let touched = false;
     let mitigated = false;
+    let firstTouchBar = null;
+    let touchCount = 0;
     let mitigationBar = null;
 
     for (let j = fromIndex; j < bars.length; j++) {
       const b = bars[j];
+      let isTouching = false;
+
       if (direction === 1) {
-        if (b.l < zone.top && b.h > zone.bottom) touched = true;
-        if (b.c < zone.bottom) { mitigated = true; mitigationBar = j; break; }
+        if (b.l < zone.top && b.h > zone.bottom) isTouching = true;
+        if (b.c < zone.bottom) {
+          mitigated = true;
+          mitigationBar = j;
+          if (isTouching && firstTouchBar == null) { firstTouchBar = j; touchCount++; }
+          break;
+        }
       } else {
-        if (b.h > zone.bottom && b.l < zone.top) touched = true;
-        if (b.c > zone.top) { mitigated = true; mitigationBar = j; break; }
+        if (b.h > zone.bottom && b.l < zone.top) isTouching = true;
+        if (b.c > zone.top) {
+          mitigated = true;
+          mitigationBar = j;
+          if (isTouching && firstTouchBar == null) { firstTouchBar = j; touchCount++; }
+          break;
+        }
+      }
+
+      if (isTouching) {
+        touched = true;
+        if (firstTouchBar == null) firstTouchBar = j;
+        touchCount++;
       }
     }
 
-    return { touched: touched, mitigated: mitigated, mitigationBar: mitigationBar };
+    return {
+      touched: touched,
+      mitigated: mitigated,
+      mitigationBar: mitigationBar,
+      firstTouchBar: firstTouchBar,
+      touchCount: touchCount
+    };
   }
 
   function detectOrderBlocks(bars, atr, direction, opts) {
@@ -95,6 +157,7 @@ window.AT.smc.zones = (function () {
 
     const mult = opts.obAtrMult != null ? opts.obAtrMult : obMult();
     const maxAge = opts.maxAge != null ? opts.maxAge : obMaxAgeBars();
+    const midlineRatio = opts.midlineRatio != null ? opts.midlineRatio : obMidlineRatio();
     const wantBoth = direction !== 1 && direction !== -1;
     const lastIdx = bars.length - 1;
 
@@ -104,45 +167,61 @@ window.AT.smc.zones = (function () {
       const a = atrAt(atrArr, i);
       if (!(a > 0)) continue;
 
-      const magnitude = Math.abs(next.c - candle.c);
-      if (magnitude < mult * a) continue;
+      const displacement = Math.abs(next.c - next.o);
+      if (displacement < mult * a) continue;
 
       const age = lastIdx - i;
       if (age > maxAge) continue;
 
       if (candle.c < candle.o && next.c > next.o && (wantBoth || direction === 1)) {
+        const top = candle.o;
+        const bottom = candle.c;
+        const midline = top - (top - bottom) * midlineRatio;
+        if (next.c < midline) continue;
+
         const zone = {
           index: i,
-          top: Math.max(candle.o, candle.c),
-          bottom: Math.min(candle.o, candle.c),
+          top: top,
+          bottom: bottom,
           direction: 1,
           type: 'Bullish_OB',
           createdAtr: a,
-          strength: Math.min(1, magnitude / (OB_STRENGTH_CEILING_ATR * a)),
+          displacementAtr: displacement / a,
+          strength: Math.min(1, displacement / (OB_STRENGTH_CEILING_ATR * a)),
           ageBars: age
         };
-        const mit = isMitigated(bars, zone, 1, i + 1);
+        const mit = analyzeMitigation(bars, zone, 1, i + 1);
         zone.touched = mit.touched;
         zone.mitigated = mit.mitigated;
         zone.mitigationBar = mit.mitigationBar;
+        zone.firstTouchBar = mit.firstTouchBar;
+        zone.touchCount = mit.touchCount;
         if (!zone.mitigated) result.push(zone);
       }
 
       if (candle.c > candle.o && next.c < next.o && (wantBoth || direction === -1)) {
+        const top = candle.c;
+        const bottom = candle.o;
+        const midline = bottom + (top - bottom) * midlineRatio;
+        if (next.c > midline) continue;
+
         const zone = {
           index: i,
-          top: Math.max(candle.o, candle.c),
-          bottom: Math.min(candle.o, candle.c),
+          top: top,
+          bottom: bottom,
           direction: -1,
           type: 'Bearish_OB',
           createdAtr: a,
-          strength: Math.min(1, magnitude / (OB_STRENGTH_CEILING_ATR * a)),
+          displacementAtr: displacement / a,
+          strength: Math.min(1, displacement / (OB_STRENGTH_CEILING_ATR * a)),
           ageBars: age
         };
-        const mit = isMitigated(bars, zone, -1, i + 1);
+        const mit = analyzeMitigation(bars, zone, -1, i + 1);
         zone.touched = mit.touched;
         zone.mitigated = mit.mitigated;
         zone.mitigationBar = mit.mitigationBar;
+        zone.firstTouchBar = mit.firstTouchBar;
+        zone.touchCount = mit.touchCount;
         if (!zone.mitigated) result.push(zone);
       }
     }
@@ -159,24 +238,29 @@ window.AT.smc.zones = (function () {
   function detectFVG(bars, atr, direction, opts) {
     opts = opts || {};
     const result = [];
-    if (!bars || bars.length < 3) return result;
+    if (!bars || bars.length < 4) return result;
 
     const atrArr = resolveAtrArray(bars, atr);
     if (!atrArr) return result;
 
     const minMult = opts.fvgMinAtrMult != null ? opts.fvgMinAtrMult : fvgMinMult();
     const maxAge = opts.maxAge != null ? opts.maxAge : fvgMaxAge();
+    const midBodyMult = opts.fvgMiddleBodyAtrMult != null ? opts.fvgMiddleBodyAtrMult : fvgMiddleBodyAtrMult();
     const wantBoth = direction !== 1 && direction !== -1;
     const lastIdx = bars.length - 1;
 
     for (let i = 2; i < bars.length; i++) {
       const c1 = bars[i - 2];
+      const c2 = bars[i - 1];
       const c3 = bars[i];
       const a = atrAt(atrArr, i);
       if (!(a > 0)) continue;
 
       const age = lastIdx - i;
       if (age > maxAge) continue;
+
+      const middleBody = Math.abs(c2.c - c2.o);
+      if (middleBody < midBodyMult * a) continue;
 
       if (c3.l > c1.h && (wantBoth || direction === 1)) {
         const top = c3.l;
@@ -190,13 +274,17 @@ window.AT.smc.zones = (function () {
             direction: 1,
             type: 'Bullish_FVG',
             createdAtr: a,
+            gapAtr: gap / a,
+            middleBodyAtr: middleBody / a,
             strength: Math.min(1, gap / (FVG_STRENGTH_CEILING_ATR * a)),
             ageBars: age
           };
-          const mit = isMitigated(bars, zone, 1, i + 1);
+          const mit = analyzeMitigation(bars, zone, 1, i + 1);
           zone.touched = mit.touched;
           zone.mitigated = mit.mitigated;
           zone.mitigationBar = mit.mitigationBar;
+          zone.firstTouchBar = mit.firstTouchBar;
+          zone.touchCount = mit.touchCount;
           if (!zone.mitigated) result.push(zone);
         }
       }
@@ -213,13 +301,17 @@ window.AT.smc.zones = (function () {
             direction: -1,
             type: 'Bearish_FVG',
             createdAtr: a,
+            gapAtr: gap / a,
+            middleBodyAtr: middleBody / a,
             strength: Math.min(1, gap / (FVG_STRENGTH_CEILING_ATR * a)),
             ageBars: age
           };
-          const mit = isMitigated(bars, zone, -1, i + 1);
+          const mit = analyzeMitigation(bars, zone, -1, i + 1);
           zone.touched = mit.touched;
           zone.mitigated = mit.mitigated;
           zone.mitigationBar = mit.mitigationBar;
+          zone.firstTouchBar = mit.firstTouchBar;
+          zone.touchCount = mit.touchCount;
           if (!zone.mitigated) result.push(zone);
         }
       }
@@ -239,6 +331,7 @@ window.AT.smc.zones = (function () {
     const filterDir = direction === 1 || direction === -1;
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i];
+      if (!z || z.mitigated === true) continue;
       if (filterDir && z.direction !== direction) continue;
       if (price >= z.bottom && price <= z.top) return z;
     }

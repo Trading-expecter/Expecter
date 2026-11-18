@@ -1,13 +1,14 @@
 window.AT = window.AT || {};
 window.AT.smc = window.AT.smc || {};
 
-window.AT.smc.structure = (function () {
+window.AT.smc.structure = (function (I) {
   'use strict';
 
   const DEFAULT_LOOKBACK = 5;
   const DEFAULT_MSS_WINDOW = 15;
   const PIVOT_TOLERANCE_ATR_MULT = 0.10;
   const MIN_PIVOT_STRENGTH = 0.2;
+  const MIN_BODY_ATR_MULT = 0.3;
 
   function cfg() {
     return (window.AT_CONFIG && window.AT_CONFIG.smc) || {};
@@ -29,6 +30,20 @@ window.AT.smc.structure = (function () {
       sum += Math.abs(bars[i].h - bars[i].l);
     }
     return (sum / n) * PIVOT_TOLERANCE_ATR_MULT;
+  }
+
+  function computeAtrInternal(bars) {
+    if (!I || typeof I.atr !== 'function') return 0;
+    if (!bars || bars.length < 15) return 0;
+    const highs = bars.map(function (b) { return b.h; });
+    const lows = bars.map(function (b) { return b.l; });
+    const closes = bars.map(function (b) { return b.c; });
+    const arr = I.atr(highs, lows, closes, 14);
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const v = arr[i];
+      if (v != null && Number.isFinite(v) && v > 0) return v;
+    }
+    return 0;
   }
 
   function findPivots(bars, lookback) {
@@ -64,13 +79,13 @@ window.AT.smc.structure = (function () {
       if (isHigh) {
         const prom = b.h - maxNearHigh;
         const strength = tol > 0 ? Math.max(0, Math.min(1, prom / (tol * 2))) : 1;
-        highs.push({ index: i, price: b.h, strength: strength });
+        highs.push({ index: i, price: b.h, strength: strength, confirmedIndex: i + L });
       }
 
       if (isLow) {
         const prom = minNearLow - b.l;
         const strength = tol > 0 ? Math.max(0, Math.min(1, prom / (tol * 2))) : 1;
-        lows.push({ index: i, price: b.l, strength: strength });
+        lows.push({ index: i, price: b.l, strength: strength, confirmedIndex: i + L });
       }
     }
 
@@ -91,6 +106,24 @@ window.AT.smc.structure = (function () {
     return lastHigh.index > lastLow.index ? 1 : -1;
   }
 
+  function findBreakoutBar(bars, fromIdx, level, direction) {
+    for (let i = fromIdx + 1; i < bars.length; i++) {
+      const b = bars[i];
+      if (direction === 1 && b.c > level) return i;
+      if (direction === -1 && b.c < level) return i;
+    }
+    return -1;
+  }
+
+  function isInvalidated(bars, breakoutIdx, level, direction) {
+    for (let i = breakoutIdx + 1; i < bars.length; i++) {
+      const b = bars[i];
+      if (direction === 1 && b.c < level) return true;
+      if (direction === -1 && b.c > level) return true;
+    }
+    return false;
+  }
+
   function detectMSS(bars, pivots, opts) {
     opts = opts || {};
     if (!bars || bars.length < 3) return null;
@@ -99,6 +132,7 @@ window.AT.smc.structure = (function () {
     const window = opts.window || mssWindowDefault();
     const lastBarIndex = bars.length - 1;
     const lastClose = bars[lastBarIndex].c;
+    const atr = opts.atr != null ? opts.atr : computeAtrInternal(bars);
 
     let bullishPivot = null;
     let bearishPivot = null;
@@ -120,29 +154,59 @@ window.AT.smc.structure = (function () {
 
     if (bullishPivot && bullishPivot.strength >= MIN_PIVOT_STRENGTH && lastClose > bullishPivot.price) {
       const prevTrend = previousTrend(bars, pivots, bullishPivot.index);
+      if (prevTrend === 0) return null;
+
+      const breakoutIdx = findBreakoutBar(bars, bullishPivot.index, bullishPivot.price, 1);
+      if (breakoutIdx < 0) return null;
+
+      if (atr > 0) {
+        const breakoutBar = bars[breakoutIdx];
+        const body = Math.abs(breakoutBar.c - breakoutBar.o);
+        if (body < MIN_BODY_ATR_MULT * atr) return null;
+      }
+
+      if (isInvalidated(bars, breakoutIdx, bullishPivot.price, 1)) return null;
+
       const isMSS = prevTrend === -1;
       return {
         direction: 1,
         level: bullishPivot.price,
         index: bullishPivot.index,
-        barsSince: lastBarIndex - bullishPivot.index,
+        breakoutIndex: breakoutIdx,
+        barsSince: lastBarIndex - breakoutIdx,
         type: isMSS ? 'MSS_Bullish' : 'BOS_Bullish',
-        fresh: (lastBarIndex - bullishPivot.index) <= window,
-        strength: bullishPivot.strength
+        fresh: (lastBarIndex - breakoutIdx) <= window,
+        strength: bullishPivot.strength,
+        bodyAtr: atr > 0 ? Math.abs(bars[breakoutIdx].c - bars[breakoutIdx].o) / atr : 0
       };
     }
 
     if (bearishPivot && bearishPivot.strength >= MIN_PIVOT_STRENGTH && lastClose < bearishPivot.price) {
       const prevTrend = previousTrend(bars, pivots, bearishPivot.index);
+      if (prevTrend === 0) return null;
+
+      const breakoutIdx = findBreakoutBar(bars, bearishPivot.index, bearishPivot.price, -1);
+      if (breakoutIdx < 0) return null;
+
+      if (atr > 0) {
+        const breakoutBar = bars[breakoutIdx];
+        const body = Math.abs(breakoutBar.c - breakoutBar.o);
+        if (body < MIN_BODY_ATR_MULT * atr) return null;
+      }
+
+      if (isInvalidated(bars, breakoutIdx, bearishPivot.price, -1)) return null;
+
       const isMSS = prevTrend === 1;
       return {
         direction: -1,
         level: bearishPivot.price,
         index: bearishPivot.index,
-        barsSince: lastBarIndex - bearishPivot.index,
+        breakoutIndex: breakoutIdx,
+        barsSince: lastBarIndex - breakoutIdx,
         type: isMSS ? 'MSS_Bearish' : 'BOS_Bearish',
-        fresh: (lastBarIndex - bearishPivot.index) <= window,
-        strength: bearishPivot.strength
+        fresh: (lastBarIndex - breakoutIdx) <= window,
+        strength: bearishPivot.strength,
+        bodyAtr: atr > 0 ? Math.abs(bars[breakoutIdx].c - bars[breakoutIdx].o) / atr : 0
       };
     }
 
@@ -153,12 +217,14 @@ window.AT.smc.structure = (function () {
     opts = opts || {};
     const lookback = opts.lookback || lookbackDefault();
     const window = opts.window || mssWindowDefault();
+    const atr = opts.atr != null ? opts.atr : computeAtrInternal(bars);
     const pivots = findPivots(bars, lookback);
-    const mss = detectMSS(bars, pivots, { window: window });
+    const mss = detectMSS(bars, pivots, { window: window, atr: atr });
     return {
       pivots: pivots,
       mss: mss,
-      trend: mss ? mss.direction : 0
+      trend: mss ? mss.direction : 0,
+      atr: atr
     };
   }
 
@@ -168,4 +234,4 @@ window.AT.smc.structure = (function () {
     detectStructure: detectStructure,
     previousTrend: previousTrend
   };
-})();
+})(window.AT && window.AT.indicators);
