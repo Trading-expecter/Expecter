@@ -155,6 +155,7 @@
   function findNearestLevels(bars, currentPrice, lookback) {
     lookback = lookback || 3;
     if (!bars || bars.length < lookback * 2 + 2) return { support: null, resistance: null };
+    if (!num(currentPrice)) return { support: null, resistance: null };
     const supports = [];
     const resistances = [];
 
@@ -186,25 +187,25 @@
     const riskCfg = cfg().risk || {};
     const stopMult = riskCfg.atrStopMult || 1.2;
     const targetMult = riskCfg.atrTargetMult || 1.8;
-    const minRR = riskCfg.minRR || 1.2;
+    const minRR = riskCfg.minRR != null ? riskCfg.minRR : 1.0;
     if (!num(entry) || !num(atr) || atr <= 0) return null;
 
     let stop, target, risk, reward;
     if (direction === 1) {
       const atrStop = entry - stopMult * atr;
-      stop = (num(support) && support < entry) ? Math.max(support, atrStop) : atrStop;
+      stop = (num(support) && support < entry) ? Math.min(support, atrStop) : atrStop;
       if (!(stop < entry)) return null;
       const atrTarget = entry + targetMult * atr;
-      target = (num(resistance) && resistance > entry) ? Math.max(resistance, atrTarget) : atrTarget;
+      target = (num(resistance) && resistance > entry) ? Math.min(resistance, atrTarget) : atrTarget;
       if (!(target > entry)) return null;
       risk = entry - stop;
       reward = target - entry;
     } else if (direction === -1) {
       const atrStop = entry + stopMult * atr;
-      stop = (num(resistance) && resistance > entry) ? Math.min(resistance, atrStop) : atrStop;
+      stop = (num(resistance) && resistance > entry) ? Math.max(resistance, atrStop) : atrStop;
       if (!(stop > entry)) return null;
       const atrTarget = entry - targetMult * atr;
-      target = (num(support) && support < entry) ? Math.min(support, atrTarget) : atrTarget;
+      target = (num(support) && support < entry) ? Math.max(support, atrTarget) : atrTarget;
       if (!(target < entry)) return null;
       risk = stop - entry;
       reward = entry - target;
@@ -325,6 +326,7 @@
     const minValidTfs = consensusCfg.minimumValidTfs || 2;
     const enterThreshold = consensusCfg.enterThreshold != null ? consensusCfg.enterThreshold : 0.60;
     const exitThreshold = consensusCfg.exitThreshold != null ? consensusCfg.exitThreshold : 0.45;
+    const atrPeriod = riskCfg.atrPeriod || 14;
 
     const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '5m';
     const symbol = opts.symbol || 'XAUUSD';
@@ -380,10 +382,6 @@
     overallDirection = applyHigherTfFilter(overallDirection, perTf);
     const higherTfOk = (beforeFilter === 0) || (overallDirection === beforeFilter);
 
-    if (overallDirection === 0 && beforeFilter === 0) {
-      overallDirection = applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold);
-    }
-
     let sumAllEvidence = 0;
     let sumAgreeEvidence = 0;
     let sumAgreeAdx = 0;
@@ -409,18 +407,18 @@
     let consensusLabel;
     if (overallDirection === 0) consensusLabel = 'neutral';
     else if (consensusScore >= thresholds.strong) consensusLabel = overallDirection === 1 ? 'strong_buy' : 'strong_sell';
-    else if (consensusScore >= thresholds.moderate) consensusLabel = overallDirection === 1 ? 'buy' : 'sell';
     else consensusLabel = overallDirection === 1 ? 'buy' : 'sell';
 
     const entryBarsRaw = barsByTf[entryTf] || null;
     const entryBars = entryBarsRaw ? cleanBars(entryBarsRaw) : null;
+    const entryData = perTf[entryTf] || null;
 
     let macroMomentum = 'Neutro';
     let macroVolatility = 'Normal';
     let alerts = [];
     let atrVal = 0;
 
-    if (entryBars && entryBars.length > 15) {
+    if (entryBars && entryBars.length >= atrPeriod + 1) {
       const hc = entryBars.map(function (b) { return b.c; });
       const hh = entryBars.map(function (b) { return b.h; });
       const hl = entryBars.map(function (b) { return b.l; });
@@ -432,7 +430,7 @@
         else if (lastRsi <= 40) macroMomentum = 'Bajista';
       }
 
-      const atrArr = I.atr(hh, hl, hc, riskCfg.atrPeriod || 14);
+      const atrArr = I.atr(hh, hl, hc, atrPeriod);
       const lastAtr = atrArr[atrArr.length - 1];
       if (num(lastAtr)) atrVal = lastAtr;
 
@@ -441,10 +439,11 @@
 
     const volumeOk = volumeConfirms(entryBars);
 
-    const entryData = perTf[entryTf] || valid[0].data;
-    const currentPrice = entryData.price;
-    const levels = findNearestLevels(entryBars, currentPrice, 3);
-    const risk = overallDirection !== 0 ? suggestRisk(currentPrice, levels.support, levels.resistance, atrVal, overallDirection) : null;
+    const currentPrice = entryData ? entryData.price : null;
+    const levels = entryData ? findNearestLevels(entryBars, currentPrice, 3) : { support: null, resistance: null };
+    const risk = (entryData && overallDirection !== 0)
+      ? suggestRisk(currentPrice, levels.support, levels.resistance, atrVal, overallDirection)
+      : null;
 
     let verdictState = 'wait';
     let verdictLabel = 'ESPERAR';
@@ -452,6 +451,8 @@
 
     if (!marketState.open) {
       verdictReason = 'Mercado cerrado (' + marketState.family + ').';
+    } else if (!entryData) {
+      verdictReason = 'Timeframe de entrada (' + entryTf + ') sin régimen válido. Esperando alineación.';
     } else if (overallDirection === 0) {
       verdictReason = previousDirection !== 0
         ? 'Sin confirmación de giro. Manteniendo dirección previa.'
@@ -467,7 +468,7 @@
     } else {
       verdictState = overallDirection === 1 ? 'buy' : 'sell';
       verdictLabel = overallDirection === 1 ? 'COMPRA' : 'VENTA';
-      verdictReason = 'Entrada: ' + currentPrice.toFixed(2) + ' | SL: ' + risk.stop.toFixed(2) + ' | TP: ' + risk.target.toFixed(2);
+      verdictReason = 'Entrada: ' + currentPrice.toFixed(2) + ' | SL: ' + risk.stop.toFixed(2) + ' | TP: ' + risk.target.toFixed(2) + ' | R:R ' + risk.rr.toFixed(2);
     }
 
     const conclusionParts = [];
