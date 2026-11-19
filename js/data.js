@@ -33,6 +33,7 @@
   function isRetryable(e) {
     if (!e || e.aborted) return false;
     if (e.network || e.timeout) return true;
+    if (e.status === 429) return true; // IMPORTANTE: Reintentar bloqueos de la API
     return e.status >= 500 && e.status < 600;
   }
 
@@ -80,7 +81,13 @@
     }).catch(function (e) {
       if (e && e.aborted) throw e;
       if (attempt < maxAttempts && isRetryable(e)) {
-        const delay = Math.min(2000, Math.pow(2, attempt - 1) * 300) + Math.random() * 200;
+        let delay = Math.min(2000, Math.pow(2, attempt - 1) * 300) + Math.random() * 200;
+        
+        // Si la API nos bloquea (429), esperamos obligatoriamente 4 segundos
+        if (e.status === 429) {
+          delay = e.retryAfter > 0 ? e.retryAfter * 1000 : 4000;
+        }
+
         return new Promise(function (res) { setTimeout(res, delay); })
           .then(function () { return getJSON(path, timeoutMs, attempt + 1, externalSignal); });
       }
@@ -152,9 +159,6 @@
     return getJSON('/api/latest?' + q, null, 1, signal).then(parseLatest);
   }
 
-  // -----------------------------------------------------------------
-  // pool(): ejecuta tareas respetando feed.maxConcurrent (por defecto 1)
-  // -----------------------------------------------------------------
   function pool(tasks, limit, globalTimeoutMs) {
     if (!tasks || !tasks.length) return Promise.resolve([]);
     const results = new Array(tasks.length);
@@ -162,7 +166,6 @@
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const signal = ctl ? ctl.signal : null;
 
-    // Forzamos concurrencia 1 por defecto (configurable via limit o feed.maxConcurrent)
     const cfgLimit = feedCfg().maxConcurrent;
     const effectiveLimit = Math.max(1, Math.min(
       (typeof limit === 'number' && limit > 0) ? limit : 1,

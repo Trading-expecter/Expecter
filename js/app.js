@@ -11,9 +11,8 @@
   const UPDATE_INTERVAL_MS = TIM.updateIntervalMs || 1000;
   const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
   const MAX_SIGNAL_LOG = 500;
-  const BAR_LIMIT = 150;                // Velas por timeframe (bajado de 300)
-  const LOAD_RETRIES = 2;               // Reintentos por TF
-  const RETRY_DELAY_MS = 1000;          // Espera entre reintentos
+  const BAR_LIMIT = 150;                // Velas por timeframe
+  const DELAY_BETWEEN_TFS = 2500;       // 2.5s de pausa entre peticiones (evita 429)
 
   const state = {
     symbol: 'XAUUSD',
@@ -546,7 +545,7 @@
   }
 
   // -----------------------------------------------------------------
-  // CARGA SECUENCIAL CON REINTENTOS (evita 429 / cortes de la API)
+  // CARGA SECUENCIAL BLINDADA (Evita 429 y fallos en cascada)
   // -----------------------------------------------------------------
   function delay(ms) {
     return new Promise(function (r) { setTimeout(r, ms); });
@@ -558,41 +557,35 @@
     const myId = state.requestId;
     const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
 
-    // Limpieza antes de empezar (evita mezclar con datos del símbolo anterior)
-    state.bars = {};
+    const newBars = {};
 
     for (let i = 0; i < tfs.length; i++) {
       if (state.requestId !== myId) return null;
       const tf = tfs[i];
-      let success = false;
-      let attempts = 0;
 
-      while (!success && attempts <= LOAD_RETRIES) {
-        if (state.requestId !== myId) return null;
-        try {
-          const bars = await D.fetchBars(state.symbol, tf, BAR_LIMIT);
-          if (bars && bars.length > 0) {
-            state.bars[tf] = bars;
-            success = true;
-          } else {
-            attempts++;
-          }
-        } catch (e) {
-          attempts++;
-          console.warn('[app] Fallo cargando ' + tf + ' (intento ' + attempts + '/' + (LOAD_RETRIES + 1) + '):', e && e.message);
-          if (attempts <= LOAD_RETRIES) await delay(RETRY_DELAY_MS);
+      try {
+        console.log('[app] Solicitando ' + tf + '...');
+        // D.fetchBars ya tiene reintentos internos automáticos para el error 429
+        const bars = await D.fetchBars(state.symbol, tf, BAR_LIMIT);
+        if (bars && bars.length > 0) {
+          newBars[tf] = bars;
+          console.log('[app] ' + tf + ' cargado con éxito (' + bars.length + ' velas).');
         }
+      } catch (e) {
+        console.warn('[app] Fallo definitivo al cargar ' + tf + ':', e && e.message);
       }
 
-      if (!success) {
-        console.warn('[app] TF ' + tf + ' descartado tras ' + (LOAD_RETRIES + 1) + ' intentos');
-      }
-
-      // Pequeña pausa entre TF para no saturar (aunque ya es secuencial)
-      if (i < tfs.length - 1) await delay(150);
+      // Pausa OBLIGATORIA de 2.5s entre peticiones para no saturar la API de Biquote
+      if (i < tfs.length - 1) await delay(DELAY_BETWEEN_TFS);
     }
 
     if (state.requestId !== myId) return null;
+
+    // Volcamos los datos recopilados
+    Object.keys(newBars).forEach(function (tf) {
+      state.bars[tf] = newBars[tf];
+    });
+
     state.loading = false;
     runAnalysisStep();
     renderAll(true);
@@ -901,27 +894,23 @@
     try { initChart(); }
     catch (e) { console.error('[app] initChart falló:', e); }
 
-    try { startFeed(); }
-    catch (e) {
-      console.error('[app] startFeed falló:', e);
-      state.feedMode = 'error';
-      renderStatus();
-    }
-
     startMasterLoop();
 
+    // IMPORTANTE: Primero cargamos todas las velas. 
+    // El feed se inicia DESPUÉS para que su polling no interfiera con la carga inicial.
     loadAllBars().then(function (results) {
-      if (!results) return;
-      D.fetchLatest(Object.keys(CFG.symbols)).then(function (ticks) {
-        ticks.forEach(function (t) { state.ticks[t.symbol] = t; });
-        updateSymbolBarPrices();
-        renderAll(true);
-      }).catch(function (e) {
-        console.error('[app] fetchLatest falló:', e);
-        renderAll(true);
-      });
+      
+      try { startFeed(); }
+      catch (e) {
+        console.error('[app] startFeed falló:', e);
+        state.feedMode = 'error';
+        renderStatus();
+      }
+
     }).catch(function (e) {
       console.error('[app] loadAllBars rechazó en init:', e);
+      // Aún así iniciamos el feed como fallback
+      try { startFeed(); } catch (err) { void 0; }
       renderAll(true);
     });
   }
