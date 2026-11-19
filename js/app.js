@@ -8,6 +8,7 @@
   const J = AT.journal;
   const CFG = window.AT_CONFIG;
   const TIM = (CFG && CFG.timings) || {};
+  const SCALP = (CFG && CFG.scalping) || {};
 
   const UPDATE_INTERVAL_MS = TIM.updateIntervalMs || 1000;
   const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
@@ -17,9 +18,17 @@
   const SNAPSHOT_BARS_HTF = 50;
   const OUTCOME_UPDATE_THROTTLE_MS = 15000;
 
+  const ENTRY_COOLDOWN_MS = SCALP.entryCooldownMs || 300000;
+  const FLIP_COOLDOWN_MS = SCALP.flipCooldownMs || 60000;
+  const LOSS_COOLDOWN_MS = SCALP.lossCooldownMs || 900000;
+  const MAX_SIGNALS_PER_HOUR = SCALP.maxSignalsPerHour || 12;
+  const MAX_SIGNALS_PER_SESSION = SCALP.maxSignalsPerSession || 40;
+  const MIN_SIGNAL_SCORE = SCALP.minSignalScore || 60;
+  const REQUIRE_LIVE_TICK = SCALP.requireLiveTick !== false;
+
   const state = {
     symbol: 'XAUUSD',
-    tf: (CFG.timeframes && CFG.timeframes.entry) || '15m',
+    tf: (CFG.timeframes && CFG.timeframes.entry) || '5m',
     bars: {},
     ticks: {},
     analysis: null,
@@ -30,6 +39,12 @@
     signalLog: [],
     lastSignalKey: '',
     lastSignalAt: 0,
+    lastSignalByDir: { '1': 0, '-1': 0 },
+    lastLossAt: 0,
+    signalsThisHour: 0,
+    signalsThisSession: 0,
+    hourStart: Date.now(),
+    sessionStart: Date.now(),
     drawMenuOpen: false,
     gapRefill: {},
     lastRenderHash: '',
@@ -345,7 +360,7 @@
     const a = state.analysis;
     const box = $('mtf');
     if (!box) return;
-    const allTfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
+    const allTfs = CFG.timeframes.list || ['1m', '5m', '15m', '1h'];
     const optional = CFG.timeframes.optional || [];
 
     if (box.children.length !== allTfs.length) {
@@ -383,7 +398,7 @@
       const dir = tfData.direction;
       const adx = tfData.adx;
       const rsi = tfData.rsi;
-      const strong = tfData.adxStrong || (num(adx) && adx >= 28);
+      const strong = tfData.adxStrong || (num(adx) && adx >= 25);
 
       let dirText, dirClass;
       if (dir === 1) {
@@ -496,7 +511,7 @@
     const entrySnapshot = cleanBarsForSnapshot(entryBars).slice(-SNAPSHOT_BARS_ENTRY);
 
     const higherTfs = {};
-    ['1h', '4h', '1d'].forEach(function (tf) {
+    ['15m', '1h'].forEach(function (tf) {
       if (tf === entryTf) return;
       const barsHtf = state.bars[tf];
       if (barsHtf && barsHtf.length) {
@@ -517,6 +532,7 @@
         regimeValid: d.regimeValid,
         price: d.price,
         fast: d.fast,
+        mid: d.mid,
         slow: d.slow,
         plusDI: d.plusDI,
         minusDI: d.minusDI,
@@ -561,6 +577,13 @@
         factors: analysis.anticipation.factors ? analysis.anticipation.factors.slice() : []
       } : null,
 
+      vwapBias: analysis.vwapBias ? {
+        enabled: analysis.vwapBias.enabled,
+        aligned: analysis.vwapBias.aligned,
+        vwap: analysis.vwapBias.vwap,
+        distanceAtr: analysis.vwapBias.distanceAtr
+      } : null,
+
       prices: {
         bid: t ? t.bid : null,
         ask: t ? t.ask : null,
@@ -597,6 +620,7 @@
           sessionLabel: analysis.sessionLabel,
           marketOpen: analysis.marketOpen,
           highLiquidity: analysis.highLiquidity,
+          preferredSession: analysis.preferredSession,
           perTf: perTfSnap,
           levels: {
             supports: (analysis.levels && analysis.levels.supports ? analysis.levels.supports.slice(0, 5) : []),
@@ -610,18 +634,64 @@
     };
   }
 
+  function resetSessionCountersIfNeeded(now) {
+    const hourElapsed = now - state.hourStart;
+    if (hourElapsed >= 3600000) {
+      state.hourStart = now;
+      state.signalsThisHour = 0;
+    }
+    const sessionElapsed = now - state.sessionStart;
+    if (sessionElapsed >= 86400000) {
+      state.sessionStart = now;
+      state.signalsThisSession = 0;
+    }
+  }
+
+  function canEmitSignal(effectiveDir, score) {
+    if (!SCALP.enabled) return true;
+    if (REQUIRE_LIVE_TICK && !state.ticks[state.symbol]) return false;
+    if (score < MIN_SIGNAL_SCORE) return false;
+    const now = Date.now();
+    resetSessionCountersIfNeeded(now);
+    if (state.signalsThisHour >= MAX_SIGNALS_PER_HOUR) return false;
+    if (state.signalsThisSession >= MAX_SIGNALS_PER_SESSION) return false;
+    if (effectiveDir !== 1 && effectiveDir !== -1) return false;
+    const lastSame = state.lastSignalByDir[String(effectiveDir)] || 0;
+    if (now - lastSame < ENTRY_COOLDOWN_MS) return false;
+    const opposite = effectiveDir === 1 ? -1 : 1;
+    const lastOpp = state.lastSignalByDir[String(opposite)] || 0;
+    if (now - lastOpp < FLIP_COOLDOWN_MS) return false;
+    if (state.lastLossAt && (now - state.lastLossAt) < LOSS_COOLDOWN_MS) return false;
+    return true;
+  }
+
+  function recordSignalEmission(effectiveDir) {
+    const now = Date.now();
+    state.lastSignalByDir[String(effectiveDir)] = now;
+    state.signalsThisHour++;
+    state.signalsThisSession++;
+  }
+
   function logSignalIfChanged(analysis) {
     if (!analysis) return;
     const curr = analysis.verdictState;
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
     if (!analysis.verdictRisk && !analysis.anticipation) return;
 
-    const now = Date.now();
-    const maxAge = TIM.maxSignalAgeMs || 5000;
-    const key = makeSignalKey(analysis);
+    let effectiveDir = analysis.overallDirection;
+    if (effectiveDir === 0 && analysis.anticipation) {
+      effectiveDir = analysis.anticipation.type === 'buy' ? 1 : -1;
+    }
+    if (effectiveDir !== 1 && effectiveDir !== -1) return;
 
+    const score = analysis.consensusScore || 0;
+    if (!canEmitSignal(effectiveDir, score)) return;
+
+    const now = Date.now();
+    const maxAge = TIM.maxSignalAgeMs || 15000;
+    const key = makeSignalKey(analysis);
     if (key === state.lastSignalKey && (now - state.lastSignalAt) < maxAge) return;
-    if (key !== state.lastSignalKey && (now - state.lastSignalAt) < 1500) return;
+    if (key !== state.lastSignalKey && (now - state.lastSignalAt) < 3000) return;
 
     const entryPrice = currentEntryPrice();
     if (entryPrice == null) return;
@@ -630,12 +700,12 @@
       ts: now,
       symbol: state.symbol,
       tf: analysis.entryTf,
-      direction: analysis.overallDirection,
+      direction: effectiveDir,
       entryPrice,
       stopPrice: analysis.verdictRisk ? analysis.verdictRisk.stop : null,
       targetPrice: analysis.verdictRisk ? analysis.verdictRisk.target : null,
       rr: analysis.verdictRisk ? analysis.verdictRisk.rr : null,
-      score: analysis.consensusScore,
+      score: score,
       confidence: analysis.confidence
     });
     if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
@@ -643,6 +713,8 @@
     if (J && typeof J.record === 'function') {
       try {
         const snap = buildSignalSnapshot(analysis, entryPrice);
+        snap.direction = effectiveDir;
+        snap.action = effectiveDir === 1 ? 'buy' : 'sell';
         J.record(snap).then(function () {
           renderJournal();
         }).catch(function (e) {
@@ -653,6 +725,7 @@
       }
     }
 
+    recordSignalEmission(effectiveDir);
     state.lastSignalKey = key;
     state.lastSignalAt = now;
   }
@@ -807,7 +880,7 @@
     state.loading = true;
     state.requestId++;
     const myId = state.requestId;
-    const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
+    const tfs = CFG.timeframes.list || ['1m', '5m', '15m', '1h'];
     const newBars = {};
 
     const tasks = tfs.map(function (tf) {
@@ -853,6 +926,11 @@
     state.smcResult = null;
     state.lastSignalKey = '';
     state.lastSignalAt = 0;
+    state.lastSignalByDir = { '1': 0, '-1': 0 };
+    state.signalsThisHour = 0;
+    state.signalsThisSession = 0;
+    state.hourStart = Date.now();
+    state.sessionStart = Date.now();
     state.gapRefill = {};
     state.lastRenderHash = '';
     state.lastOutcomeUpdateAt = 0;
@@ -1280,7 +1358,10 @@
         errors: state.cycleErrorCount,
         lastAnalysisAt: state.lastAnalysisAt,
         lastPriceCheckAt: state.lastPriceCheckAt,
-        lastOutcomeUpdateAt: state.lastOutcomeUpdateAt
+        lastOutcomeUpdateAt: state.lastOutcomeUpdateAt,
+        signalsThisHour: state.signalsThisHour,
+        signalsThisSession: state.signalsThisSession,
+        lastSignalByDir: state.lastSignalByDir
       };
     }
   };

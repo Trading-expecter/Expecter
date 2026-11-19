@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '4.1.0',
+  version: '5.0.0-scalping',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -9,7 +9,18 @@ window.AT_CONFIG = {
     renderRaf: true,
     cycleBudgetMs: 4500,
     staleBarsMs: 20000,
-    maxSignalAgeMs: 5000
+    maxSignalAgeMs: 15000
+  },
+
+  scalping: {
+    enabled: true,
+    entryCooldownMs: 300000,
+    flipCooldownMs: 60000,
+    lossCooldownMs: 900000,
+    maxSignalsPerHour: 12,
+    maxSignalsPerSession: 40,
+    requireLiveTick: true,
+    minSignalScore: 60
   },
 
   symbols: {
@@ -22,64 +33,76 @@ window.AT_CONFIG = {
   },
 
   timeframes: {
-    entry: '15m',
-    list: ['15m', '1h', '4h', '1d'],
-    bias: ['4h', '1d'],
-    weights: { '15m': 1, '1h': 2, '4h': 4, '1d': 8 }
+    entry: '5m',
+    trigger: '1m',
+    list: ['1m', '5m', '15m', '1h'],
+    bias: ['15m', '1h'],
+    optional: ['4h', '1d'],
+    weights: { '1m': 1, '5m': 5, '15m': 3, '1h': 2, '4h': 1, '1d': 1 }
+  },
+
+  vwap: {
+    enabled: true,
+    anchor: 'session',
+    requireAlignment: true,
+    proximityAtrMult: 0.75,
+    rejectDistanceAtrMult: 2.5
   },
 
   regime: {
     adxPeriod: 14,
-    adxMin: 22,
-    adxStrong: 28,
-    emaFast: 50,
-    emaSlow: 200,
-    emaSeparationMinPct: 0.5,
-    returnLookback: 30,
-    returnMinPct: 0.2
+    adxMin: 18,
+    adxStrong: 25,
+    emaPeriods: [9, 21, 50],
+    emaStackRequired: true,
+    emaSeparationMinPct: 0.08,
+    returnLookback: 15,
+    returnMinPct: 0.08
   },
 
   consensus: {
-    minimumValidTfs: 1,
-    weightedMajority: 0.60,
-    thresholds: { strong: 65, moderate: 45 },
-    adxNormalizationCeiling: 40,
+    minimumValidTfs: 2,
+    weightedMajority: 0.55,
+    thresholds: { strong: 60, moderate: 40 },
+    adxNormalizationCeiling: 30,
     tieBreak: 'higher_tf'
   },
 
   risk: {
     atrPeriod: 14,
     atrStopMult: 1.5,
-    atrTargetMult: 3.0,
-    minRR: 1.8,
-    maxRiskPct: 1.0,
-    maxSignalAgeBars: 8
+    atrTargetMult: 2.0,
+    minRR: 1.3,
+    maxRiskPct: 0.5,
+    maxSignalAgeBars: 5,
+    maxDailyLossPct: 3.0,
+    maxConsecutiveLosses: 3
   },
 
   anticipation: {
     enabled: true,
-    minConfidence: 55,
-    strongConfidence: 80,
-    rsiDivergenceLookback: 8,
+    minConfidence: 45,
+    strongConfidence: 70,
+    rsiDivergenceLookback: 5,
     rsiDivergenceGap: 1,
-    rsiDivergenceMinDelta: 2,
+    rsiDivergenceMinDelta: 1.5,
     macdEnabled: true,
-    macdFast: 12,
-    macdSlow: 26,
-    macdSignal: 9,
+    macdFast: 8,
+    macdSlow: 21,
+    macdSignal: 5,
     pinBarBodyRatio: 0.4,
     pinBarWickRatio: 2.0,
     engulfingEnabled: true,
     sweepEnabled: true,
-    sweepLookback: 10,
-    minLevelProximityAtr: 0.8,
+    sweepLookback: 6,
+    minLevelProximityAtr: 0.6,
     multiTfConfluenceBonus: 15,
     scoreRsiDivergence: 25,
     scoreMacdDivergence: 20,
     scorePinBar: 20,
     scoreEngulfing: 15,
     scoreSweep: 20,
-    counterTrendMinConfidence: 85
+    counterTrendMinConfidence: 80
   },
 
   signal: {
@@ -99,10 +122,10 @@ window.AT_CONFIG = {
     rsiOverbought: 80,
     rsiOversold: 20,
     adxDropPct: 30,
-    lookbackCandles: 5,
+    lookbackCandles: 3,
     volumeDropPct: 40,
-    volumeLookback: 20,
-    divergenceLookback: 15,
+    volumeLookback: 15,
+    divergenceLookback: 8,
     divergenceGap: 1,
     consensusOverextension: 95,
     dangerBlockThreshold: 2
@@ -110,35 +133,37 @@ window.AT_CONFIG = {
 
   smc: {
     atrPeriod: 14,
-    pivotLookback: 5,
-    mssWindow: 15,
+    pivotLookback: 3,
+    mssWindow: 8,
     mssDisplacementBodyRatio: 0.55,
     mssDisplacementAtrMult: 1.0,
     displacementEnabled: false,
-    zigzagAtrMult: 1.8,
+    zigzagAtrMult: 1.5,
     zigzagEnabled: true,
-    sweepWindow: 5,
-    sweepAtrMult: 0.35,
-    sweepMaxAtrMult: 1.8,
+    sweepWindow: 3,
+    sweepAtrMult: 0.30,
+    sweepMaxAtrMult: 1.5,
     sweepRejectionMin: 0.5,
-    obAtrMult: 1.8,
+    obAtrMult: 1.5,
     obMaxZones: 3,
-    obMaxAgeBars: 150,
+    obMaxAgeBars: 80,
     obMitigationCloseOnly: true,
     fvgMaxZones: 3,
-    fvgMinAtrMult: 0.30,
-    fvgMaxAge: 60,
+    fvgMinAtrMult: 0.25,
+    fvgMaxAge: 30,
     fvgMitigationCloseOnly: true,
     eqToleranceAtrMult: 0.10,
     oteMin: 0.618,
     oteMax: 0.79,
     oteMid: 0.705,
-    oteSwingRecency: 25,
-    minSwingAtrMult: 4,
-    maxSwingAge: 200,
+    oteSwingRecency: 15,
+    minSwingAtrMult: 3,
+    maxSwingAge: 100,
     swingBodyRatioMin: 0.5,
     requireBosForOte: false,
     requirePremiumDiscount: false,
+    htfZoneRequired: true,
+    htfZoneTfs: ['15m', '1h'],
     weights: { mss: 30, sweep: 25, fvg: 15, ob: 15, ote: 15 },
     bosWeightFactor: 0.5,
     staleMssFactor: 0.5,
@@ -152,9 +177,9 @@ window.AT_CONFIG = {
     minConfidence: 15,
     riskTiers: { high: 1.0, medium: 0.5, low: 0.25, vetoed: 0.0 },
     blockers: {
-      enabled: false,
+      enabled: true,
       strict: false,
-      lowVolumeHours: [],
+      lowVolumeHours: [[21, 23], [0, 1]],
       newsWindows: []
     }
   },
@@ -164,7 +189,11 @@ window.AT_CONFIG = {
     newYork:  { startGmt: 13, endGmt: 21 },
     combined: { startGmt: 13, endGmt: 16 },
     dstAdjust: false,
-    requireActive: false
+    requireActive: false,
+    preferredWindows: [
+      { startGmt: 7,  endGmt: 11 },
+      { startGmt: 13, endGmt: 17 }
+    ]
   },
 
   tradingHours: {
@@ -191,10 +220,10 @@ window.AT_CONFIG = {
   },
 
   chart: {
-    defaultCount: 150,
-    minCount: 20,
-    maxCount: 1000,
-    emaPeriods: [20, 50, 200],
+    defaultCount: 100,
+    minCount: 30,
+    maxCount: 500,
+    emaPeriods: [9, 21, 50],
     colors: {
       ema20: '#F59E0B',
       ema50: '#22D3EE',
