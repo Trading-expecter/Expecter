@@ -173,12 +173,47 @@
       return;
     }
 
-    const icon = a.verdictState === 'buy' ? '▲' : a.verdictState === 'sell' ? '▼' : '◷';
-    badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
-      '<span class="verdict-text">' + esc(a.verdictLabel) + '</span>';
-    badge.className = 'verdict-badge ' + a.verdictState;
+    const mtf = a.multiTfSignal;
+    let mainLabel = a.verdictLabel;
+    let mainState = a.verdictState;
+    let isAnticipation = false;
 
-    let text = a.verdictReason || '';
+    if (a.anticipation && a.anticipation.strength === 'strong') {
+      isAnticipation = true;
+    }
+
+    if (!isAnticipation && mtf && mtf.action !== 'wait' && (a.verdictState === 'wait' || a.verdictState !== mtf.action)) {
+      if (mtf.strength === 'strong' || mtf.strength === 'moderate') {
+        mainLabel = mtf.action === 'buy'
+          ? 'CONSENSO: COMPRAR' + (mtf.strength === 'strong' ? ' ★' : '')
+          : 'CONSENSO: VENDER' + (mtf.strength === 'strong' ? ' ★' : '');
+        mainState = mtf.action;
+      }
+    }
+
+    let icon = mainState === 'buy' ? '▲' : mainState === 'sell' ? '▼' : '◷';
+    if (isAnticipation) icon = '⚡';
+
+    badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
+      '<span class="verdict-text">' + esc(mainLabel) + '</span>';
+    badge.className = 'verdict-badge ' + mainState;
+
+    let text = '';
+
+    if (mtf) {
+      text += '📊 ' + mtf.summary;
+    }
+
+    if (a.anticipation) {
+      text += ' · ⚡ ' + a.anticipation.factors.join(', ') + ' (' + a.anticipation.score + '%)';
+    }
+
+    if (a.verdictState === 'buy' || a.verdictState === 'sell') {
+      text += ' · 🎯 ' + a.verdictLabel + ': ' + (a.verdictReason || '');
+    } else if (a.verdictReason && a.verdictReason.indexOf('Faltan') === -1 && a.verdictReason.indexOf('Fuerte confluencia') === -1) {
+      text += ' · ' + a.verdictReason;
+    }
+
     if (a.proximitySignal) {
       text += ' · 📍 ' + a.proximitySignal.label +
         ' @ ' + fmt(state.symbol, a.proximitySignal.level) +
@@ -188,7 +223,8 @@
       const r = a.verdictRisk;
       text += ' · Stop ' + fmt(state.symbol, r.stop) + ' · Target ' + fmt(state.symbol, r.target);
     }
-    reason.textContent = text;
+
+    reason.textContent = text.replace(/^ · /, '');
   }
 
   function renderSMC() {
@@ -286,6 +322,16 @@
       }
       sEl.textContent = txt;
       sEl.className = cls;
+    }
+
+    const mtfEl = $('multiTfSummary');
+    if (mtfEl && a.multiTfSignal) {
+      const s = a.multiTfSignal;
+      let color = 'var(--text-dim)';
+      if (s.action === 'buy') color = s.strength === 'strong' ? 'var(--up)' : 'var(--warn)';
+      else if (s.action === 'sell') color = s.strength === 'strong' ? 'var(--down)' : 'var(--warn)';
+      mtfEl.textContent = s.summary;
+      mtfEl.style.color = color;
     }
   }
 
@@ -385,6 +431,8 @@
       state.smcResult ? state.smcResult.grade || '' : '',
       (a.alerts || []).length,
       a.proximitySignal ? a.proximitySignal.type : '',
+      a.anticipation ? a.anticipation.type + ':' + a.anticipation.score : '',
+      a.multiTfSignal ? a.multiTfSignal.action + ':' + a.multiTfSignal.strength : '',
       state.feedMode
     ].join('|');
   }
@@ -425,7 +473,7 @@
     if (!analysis) return;
     const curr = analysis.verdictState;
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
-    if (!analysis.verdictRisk) return;
+    if (!analysis.verdictRisk && !analysis.anticipation) return;
 
     const now = Date.now();
     const maxAge = TIM.maxSignalAgeMs || 5000;
@@ -443,9 +491,9 @@
       tf: analysis.entryTf,
       direction: analysis.overallDirection,
       entryPrice,
-      stopPrice: analysis.verdictRisk.stop,
-      targetPrice: analysis.verdictRisk.target,
-      rr: analysis.verdictRisk.rr,
+      stopPrice: analysis.verdictRisk ? analysis.verdictRisk.stop : null,
+      targetPrice: analysis.verdictRisk ? analysis.verdictRisk.target : null,
+      rr: analysis.verdictRisk ? analysis.verdictRisk.rr : null,
       score: analysis.consensusScore,
       confidence: analysis.confidence
     });

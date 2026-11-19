@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '4.0.3',
+  version: '4.1.0',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -54,6 +54,32 @@ window.AT_CONFIG = {
     minRR: 1.8,
     maxRiskPct: 1.0,
     maxSignalAgeBars: 8
+  },
+
+  anticipation: {
+    enabled: true,
+    minConfidence: 55,
+    strongConfidence: 80,
+    rsiDivergenceLookback: 8,
+    rsiDivergenceGap: 1,
+    rsiDivergenceMinDelta: 2,
+    macdEnabled: true,
+    macdFast: 12,
+    macdSlow: 26,
+    macdSignal: 9,
+    pinBarBodyRatio: 0.4,
+    pinBarWickRatio: 2.0,
+    engulfingEnabled: true,
+    sweepEnabled: true,
+    sweepLookback: 10,
+    minLevelProximityAtr: 0.8,
+    multiTfConfluenceBonus: 15,
+    scoreRsiDivergence: 25,
+    scoreMacdDivergence: 20,
+    scorePinBar: 20,
+    scoreEngulfing: 15,
+    scoreSweep: 20,
+    counterTrendMinConfidence: 85
   },
 
   signal: {

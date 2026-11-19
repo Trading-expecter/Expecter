@@ -324,6 +324,52 @@
     };
   }
 
+  function macd(closes, fastPeriod, slowPeriod, signalPeriod) {
+    fastPeriod = fastPeriod || 12;
+    slowPeriod = slowPeriod || 26;
+    signalPeriod = signalPeriod || 9;
+
+    const n = closes.length;
+    const macdLine = nulls(n);
+    const signalLine = nulls(n);
+    const histogram = nulls(n);
+
+    if (n < slowPeriod + signalPeriod) {
+      return { macd: macdLine, signal: signalLine, histogram: histogram };
+    }
+
+    const fastEma = ema(closes, fastPeriod);
+    const slowEma = ema(closes, slowPeriod);
+
+    for (let i = 0; i < n; i++) {
+      if (fastEma[i] != null && slowEma[i] != null) {
+        macdLine[i] = fastEma[i] - slowEma[i];
+      }
+    }
+
+    const firstMacdIdx = firstValid(macdLine);
+    if (firstMacdIdx < 0) {
+      return { macd: macdLine, signal: signalLine, histogram: histogram };
+    }
+
+    const macdValid = macdLine.slice(firstMacdIdx);
+    const sigValid = ema(macdValid, signalPeriod);
+
+    for (let i = 0; i < sigValid.length; i++) {
+      if (sigValid[i] != null) {
+        signalLine[firstMacdIdx + i] = sigValid[i];
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (macdLine[i] != null && signalLine[i] != null) {
+        histogram[i] = macdLine[i] - signalLine[i];
+      }
+    }
+
+    return { macd: macdLine, signal: signalLine, histogram: histogram };
+  }
+
   return {
     nulls: nulls,
     firstValid: firstValid,
@@ -344,6 +390,7 @@
     nextRsi: nextRsi,
     adx: adx,
     initAdxState: initAdxState,
-    nextAdx: nextAdx
+    nextAdx: nextAdx,
+    macd: macd
   };
 }));
