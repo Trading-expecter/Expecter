@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '4.0.0',
+  version: '4.0.1',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -40,7 +40,7 @@ window.AT_CONFIG = {
   },
 
   consensus: {
-    minimumValidTfs: 3,
+    minimumValidTfs: 2, // Bajamos a 2 para que sea más fácil operar si falla una TF
     weightedMajority: 0.60,
     thresholds: { strong: 65, moderate: 45 },
     adxNormalizationCeiling: 40,
@@ -149,8 +149,8 @@ window.AT_CONFIG = {
   },
 
   feed: {
-    fetchTimeout: 8000,
-    globalTimeout: 20000,
+    fetchTimeout: 15000,   // 15 segundos por petición
+    globalTimeout: 40000,  // 40 segundos para todo el lote
     pollMs: 2000,
     pollSlowMs: 20000,
     retryMs: 60000,
@@ -196,7 +196,7 @@ window.AT_CONFIG = {
   },
 
   analysis: {
-    minBarsPerTf: 50,
+    minBarsPerTf: 30, // Bajamos a 30 para que acepte más temporalidades
     useClosedCandlesOnly: true
   }
 };

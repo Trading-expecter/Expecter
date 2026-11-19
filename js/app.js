@@ -438,7 +438,9 @@
     if (state.gapRefill[tf]) return;
     state.gapRefill[tf] = true;
     const myId = state.requestId;
-    D.fetchBars(state.symbol, tf, 1000).then(function (bars) {
+    
+    // Pedimos 300 en lugar de 1000
+    D.fetchBars(state.symbol, tf, 300).then(function (bars) {
       if (state.requestId !== myId || !bars || !bars.length) return;
       state.bars[tf] = bars;
       if (chart && state.tf === tf) {
@@ -480,7 +482,10 @@
     try {
       const entryTf = res.entryTf || state.tf;
       const raw = state.bars[entryTf];
-      if (raw && raw.length > 50) {
+      const minBars = (CFG.analysis && CFG.analysis.minBarsPerTf) || 30;
+      
+      // Validación con 30 velas mínimas
+      if (raw && raw.length >= minBars) {
         const useClosed = (CFG.analysis && CFG.analysis.useClosedCandlesOnly) !== false;
         const closed = (useClosed && raw.length > 1) ? raw.slice(0, -1) : raw;
         state.smcResult = SMC.evaluate(closed, res.overallDirection, {
@@ -552,7 +557,8 @@
     const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
 
     const tasks = tfs.map(function (tf) {
-      return function (signal) { return D.fetchBars(state.symbol, tf, 1000, signal); };
+      // Pedimos 300 en lugar de 1000
+      return function (signal) { return D.fetchBars(state.symbol, tf, 300, signal); };
     });
 
     return D.pool(tasks, 3, CFG.feed.globalTimeout || 20000).then(function (results) {

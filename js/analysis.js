@@ -91,7 +91,7 @@
   }
 
   function analyzeTimeframe(bars) {
-    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 50;
+    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 30;
     if (!bars || bars.length < minBars) return null;
 
     const closes = bars.map(function (b) { return b.c; });
@@ -317,34 +317,6 @@
     return { stop: stop, target: target, rr: rr, valid: rr >= minRR };
   }
 
-  function emptyResult(reason, sessionLabel, marketOpen, symbolFamily) {
-    return {
-      consensusScore: 0,
-      consensusLabel: 'neutral',
-      consensusText: LABELS.neutral,
-      confidence: 0,
-      overallDirection: 0,
-      perTf: {},
-      macroTrend: '—',
-      macroMomentum: '—',
-      macroVolatility: '—',
-      avgAdxAligned: 0,
-      avgAdxOpposed: 0,
-      alerts: [],
-      verdictState: 'wait',
-      verdictLabel: 'ESPERAR',
-      verdictReason: reason || 'Datos insuficientes.',
-      verdictRisk: null,
-      marketOpen: !!marketOpen,
-      highLiquidity: false,
-      sessionLabel: sessionLabel || SESSION_LABELS.closed,
-      symbolFamily: symbolFamily || 'unknown',
-      entryTf: null,
-      conclusion: reason || 'Datos insuficientes.',
-      computedAt: Date.now()
-    };
-  }
-
   function computeConsensus(valid, thresholds, weightedMajority) {
     let buyWeight = 0;
     let sellWeight = 0;
@@ -446,6 +418,34 @@
     };
   }
 
+  function emptyResult(reason, sessionLabel, marketOpen, symbolFamily) {
+    return {
+      consensusScore: 0,
+      consensusLabel: 'neutral',
+      consensusText: LABELS.neutral,
+      confidence: 0,
+      overallDirection: 0,
+      perTf: {},
+      macroTrend: '—',
+      macroMomentum: '—',
+      macroVolatility: '—',
+      avgAdxAligned: 0,
+      avgAdxOpposed: 0,
+      alerts: [],
+      verdictState: 'wait',
+      verdictLabel: 'ESPERAR',
+      verdictReason: reason || 'Datos insuficientes.',
+      verdictRisk: null,
+      marketOpen: !!marketOpen,
+      highLiquidity: false,
+      sessionLabel: sessionLabel || SESSION_LABELS.closed,
+      symbolFamily: symbolFamily || 'unknown',
+      entryTf: null,
+      conclusion: reason || 'Datos insuficientes.',
+      computedAt: Date.now()
+    };
+  }
+
   function analyze(barsByTf, opts) {
     try {
       return _analyze(barsByTf, opts);
@@ -463,7 +463,7 @@
     const regimeCfg = c.regime || {};
     const exCfg = c.exhaustion || {};
     const thresholds = consensusCfg.thresholds || { strong: 65, moderate: 45 };
-    const minValidTfs = consensusCfg.minimumValidTfs || 3;
+    const minValidTfs = consensusCfg.minimumValidTfs || 2; // Cambiado por defecto a 2
     const weightedMajority = consensusCfg.weightedMajority || 0.60;
     const adxMin = regimeCfg.adxMin || 22;
     const dangerBlock = exCfg.dangerBlockThreshold || 2;
@@ -496,9 +496,10 @@
       }
     }
 
-    if (valid.length < minValidTfs) {
+    // Si de plano no hay NADA de datos, devolvemos vacío.
+    if (valid.length === 0) {
       return emptyResult(
-        'Datos insuficientes: se necesitan ≥' + minValidTfs + ' temporalidades válidas (hay ' + valid.length + ').',
+        'Datos insuficientes: no se ha podido analizar ninguna temporalidad.',
         sessionLabel, marketState.open, marketState.family
       );
     }
@@ -533,7 +534,8 @@
     let alerts = [];
     let atrVal = 0;
 
-    if (entryBars && entryBars.length > 30) {
+    // Calculamos métricas de la TF de entrada (15m) incluso si solo hay 1 TF
+    if (entryBars && entryBars.length >= 20) {
       const hc = entryBars.map(function (b) { return b.c; });
       const hh = entryBars.map(function (b) { return b.h; });
       const hl = entryBars.map(function (b) { return b.l; });
@@ -581,22 +583,33 @@
     const fmt = function (p) { return num(p) ? p.toFixed(digits) : '—'; };
     const dangerCount = alerts.filter(function (a) { return a.type === 'danger'; }).length;
 
-    const verdict = computeVerdict({
-      marketOpen: marketState.open,
-      marketFamily: marketState.family,
-      overallDirection: overallDirection,
-      buyShare: buyShare,
-      biasValid: biasValid,
-      avgAdxAligned: avgAdxAligned,
-      adxMin: adxMin,
-      consensusLabel: consensusLabel,
-      consensusScore: consensusScore,
-      dangerCount: dangerCount,
-      dangerBlock: dangerBlock,
-      risk: risk,
-      minRR: minRR,
-      fmt: fmt
-    });
+    let verdict;
+    
+    // Si falta alguna TF, no bloqueamos las métricas, pero avisamos en el veredicto.
+    if (valid.length < minValidTfs) {
+      verdict = {
+        state: 'wait',
+        label: 'ESPERAR',
+        reason: 'Faltan temporalidades: ' + valid.length + ' de ' + minValidTfs + ' mínimas (cargando datos...).'
+      };
+    } else {
+      verdict = computeVerdict({
+        marketOpen: marketState.open,
+        marketFamily: marketState.family,
+        overallDirection: overallDirection,
+        buyShare: buyShare,
+        biasValid: biasValid,
+        avgAdxAligned: avgAdxAligned,
+        adxMin: adxMin,
+        consensusLabel: consensusLabel,
+        consensusScore: consensusScore,
+        dangerCount: dangerCount,
+        dangerBlock: dangerBlock,
+        risk: risk,
+        minRR: minRR,
+        fmt: fmt
+      });
+    }
 
     const conclusionParts = [];
     const dirText = overallDirection === 1 ? 'alcista' : overallDirection === -1 ? 'bajista' : 'neutral';
