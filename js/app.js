@@ -18,11 +18,11 @@
   const SNAPSHOT_BARS_HTF = 50;
   const OUTCOME_UPDATE_THROTTLE_MS = 15000;
 
-  const ENTRY_COOLDOWN_MS = SCALP.entryCooldownMs || 300000;
+  const ENTRY_COOLDOWN_MS = SCALP.entryCooldownMs || 180000;
   const FLIP_COOLDOWN_MS = SCALP.flipCooldownMs || 60000;
   const LOSS_COOLDOWN_MS = SCALP.lossCooldownMs || 900000;
-  const MAX_SIGNALS_PER_HOUR = SCALP.maxSignalsPerHour || 12;
-  const MAX_SIGNALS_PER_SESSION = SCALP.maxSignalsPerSession || 40;
+  const MAX_SIGNALS_PER_HOUR = SCALP.maxSignalsPerHour || 15;
+  const MAX_SIGNALS_PER_SESSION = SCALP.maxSignalsPerSession || 50;
   const MIN_SIGNAL_SCORE = SCALP.minSignalScore || 65;
   const REQUIRE_LIVE_TICK = SCALP.requireLiveTick !== false;
 
@@ -208,8 +208,9 @@
     let mainState = a.verdictState;
     let icon = mainState === 'buy' ? '▲' : mainState === 'sell' ? '▼' : '◷';
     
-    if (a.verdictLabel.indexOf('Reversión') !== -1) icon = '⚡';
-    else if (a.verdictLabel.indexOf('Retroceso') !== -1) icon = '🎯';
+    if (mainLabel.indexOf('Breakout') !== -1) icon = '🚀';
+    else if (mainLabel.indexOf('Reversión') !== -1) icon = '⚡';
+    else if (mainLabel.indexOf('Retroceso') !== -1) icon = '🎯';
 
     badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
       '<span class="verdict-text">' + esc(mainLabel) + '</span>';
@@ -611,9 +612,10 @@
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
 
     let effectiveDir = analysis.overallDirection;
-    if (effectiveDir === 0 && analysis.anticipation) {
-      effectiveDir = analysis.anticipation.type === 'buy' ? 1 : -1;
+    if (effectiveDir === 0 && analysis.verdictState !== 'wait') {
+      effectiveDir = analysis.verdictState === 'buy' ? 1 : -1;
     }
+    
     if (effectiveDir !== 1 && effectiveDir !== -1) return;
 
     const score = analysis.consensusScore || 0;

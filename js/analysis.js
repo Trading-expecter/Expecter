@@ -35,7 +35,7 @@
   }
 
   function normalizeAdx(adx) {
-    const ceiling = (cfg().consensus && cfg().consensus.adxNormalizationCeiling) || 30;
+    const ceiling = (cfg().consensus && cfg().consensus.adxNormalizationCeiling) || 40;
     if (!num(adx) || adx <= 0) return 0;
     return Math.min(adx, ceiling) / ceiling;
   }
@@ -124,7 +124,7 @@
     const returnMin = rCfg.returnMinPct || 0.08;
     const adxMin = rCfg.adxMin || 18;
     const adxStrong = rCfg.adxStrong || 25;
-    const adxMax = rCfg.adxMax || 40;
+    const adxMax = rCfg.adxMax || 50;
     const emaStackRequired = rCfg.emaStackRequired !== false;
 
     const periods = pickEmaPeriods(closes.length, emaPeriods[0], emaPeriods[2]);
@@ -235,7 +235,7 @@
       return { enabled: true, aligned: true, vwap: vwap, distanceAtr: null };
     }
     const distAtr = (price - vwap) / atrVal;
-    const rejectDist = vcfg.rejectDistanceAtrMult || 2.5;
+    const rejectDist = vcfg.rejectDistanceAtrMult || 3.5;
     const aligned = Math.abs(distAtr) <= rejectDist;
     return {
       enabled: true,
@@ -431,12 +431,64 @@
 
   function isExhausted(rsiVal, adxVal, adxPrev) {
     const cfgExh = cfg().exhaustion || {};
-    const rsiOb = cfgExh.rsiOverbought || 75;
-    const rsiOs = cfgExh.rsiOversold || 25;
+    const rsiOb = cfgExh.rsiOverbought || 85;
+    const rsiOs = cfgExh.rsiOversold || 15;
     
     if (num(rsiVal) && (rsiVal > rsiOb || rsiVal < rsiOs)) return true;
-    if (num(adxVal) && num(adxPrev) && adxVal > 35 && adxPrev > adxVal * 1.15) return true;
+    if (num(adxVal) && num(adxPrev) && adxVal > 40 && adxPrev > adxVal * 1.15) return true;
     return false;
+  }
+
+  function detectBreakoutSetup(bars, atr, currentPrice) {
+    const cfgBr = cfg().breakout || {};
+    if (cfgBr.enabled === false || !bars || bars.length < 10) return null;
+
+    const last = bars[bars.length - 1];
+    const body = Math.abs(last.c - last.o);
+    const range = last.h - last.l;
+    
+    const minBody = atr * (cfgBr.minBodyAtrMult || 1.2);
+    const minRange = atr * (cfgBr.minRangeAtrMult || 1.5);
+
+    let type = null;
+    let score = 0;
+    const reasons = [];
+
+    if (body >= minBody && range >= minRange) {
+      if (last.c < last.o) {
+        type = 'sell';
+        score = Math.min(100, 60 + (body / atr) * 5);
+        reasons.push('Vela de impulso bajista');
+      } else if (last.c > last.o) {
+        type = 'buy';
+        score = Math.min(100, 60 + (body / atr) * 5);
+        reasons.push('Vela de impulso alcista');
+      }
+    }
+
+    if (!type) {
+      const lookback = cfgBr.lookbackSwings || 5;
+      let highest = -Infinity, lowest = Infinity;
+      for (let i = bars.length - 1 - lookback; i < bars.length - 1; i++) {
+        if (bars[i].h > highest) highest = bars[i].h;
+        if (bars[i].l < lowest) lowest = bars[i].l;
+      }
+      
+      if (currentPrice > highest + atr * 0.1) {
+        type = 'buy';
+        score = 70;
+        reasons.push('Ruptura de máximo');
+      } else if (currentPrice < lowest - atr * 0.1) {
+        type = 'sell';
+        score = 70;
+        reasons.push('Ruptura de mínimo');
+      }
+    }
+
+    if (type && score >= (cfgBr.minScore || 70)) {
+      return { type, score, reasons };
+    }
+    return null;
   }
 
   function detectReversalSetup(bars, levels, atr, currentPrice, rsiVal) {
@@ -649,6 +701,18 @@
     const digits = (cfg().symbols && cfg().symbols[ctx.symbol] && cfg().symbols[ctx.symbol].digits) || 2;
     const fmt = function (p) { return num(p) ? p.toFixed(digits) : '—'; };
 
+    if (ctx.breakout) {
+      const dir = ctx.breakout.type === 'buy' ? 1 : -1;
+      const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      const isBuy = dir === 1;
+      return {
+        state: isBuy ? 'buy' : 'sell',
+        label: isBuy ? '¡COMPRAR AHORA! (Breakout)' : '¡VENDER AHORA! (Breakout)',
+        reason: 'Movimiento de fuerza: ' + ctx.breakout.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        risk: risk
+      };
+    }
+
     if (ctx.reversal) {
       const dir = ctx.reversal.type === 'buy' ? 1 : -1;
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
@@ -665,7 +729,7 @@
       return {
         state: 'wait',
         label: 'ESPERAR (Agotamiento)',
-        reason: 'Tendencia agotada (RSI extremo o ADX cayendo). No perseguir el precio. Esperando divergencia/sweep para reversión.'
+        reason: 'Tendencia agotada (RSI extremo o ADX cayendo). No perseguir el precio. Esperando divergencia/sweep para reversión o ruptura de fuerza.'
       };
     }
 
@@ -814,11 +878,16 @@
 
     let reversalSetup = null;
     let continuationSetup = null;
+    let breakoutSetup = null;
 
     if (entryBars && entryBars.length > 20) {
-      reversalSetup = detectReversalSetup(entryBars, levels, atrVal, currentPrice, rsiVal);
-      if (!reversalSetup && !exhausted) {
-        continuationSetup = detectContinuationSetup(entryBars, overallDirection, atrVal, currentPrice, vwapBias);
+      breakoutSetup = detectBreakoutSetup(entryBars, atrVal, currentPrice);
+      
+      if (!breakoutSetup) {
+        reversalSetup = detectReversalSetup(entryBars, levels, atrVal, currentPrice, rsiVal);
+        if (!reversalSetup && !exhausted) {
+          continuationSetup = detectContinuationSetup(entryBars, overallDirection, atrVal, currentPrice, vwapBias);
+        }
       }
     }
 
@@ -842,6 +911,7 @@
       isExhausted: exhausted,
       reversal: reversalSetup,
       continuation: continuationSetup,
+      breakout: breakoutSetup,
       symbol: symbol
     });
 
@@ -931,8 +1001,8 @@
 
     const lastRsi = rsiArr[i];
     const prevRsi = rsiArr[i - 1];
-    const ob = exCfg.rsiOverbought || 75;
-    const os = exCfg.rsiOversold || 25;
+    const ob = exCfg.rsiOverbought || 85;
+    const os = exCfg.rsiOversold || 15;
     if (num(lastRsi) && num(prevRsi)) {
       if (lastRsi > ob && prevRsi <= ob) alerts.push({ type: 'info', text: 'RSI cruza sobrecompra (' + lastRsi.toFixed(1) + ').' });
       else if (lastRsi < os && prevRsi >= os) alerts.push({ type: 'info', text: 'RSI cruza sobreventa (' + lastRsi.toFixed(1) + ').' });
@@ -941,7 +1011,7 @@
     const lookback = exCfg.lookbackCandles || 5;
     if (i >= lookback && num(adxArr[i]) && num(adxArr[i - lookback]) && adxArr[i - lookback] > 0) {
       const dropPct = ((adxArr[i - lookback] - adxArr[i]) / adxArr[i - lookback]) * 100;
-      if (dropPct > (exCfg.adxDropPct || 20)) alerts.push({ type: 'info', text: 'ADX cae ' + dropPct.toFixed(0) + '% en ' + lookback + ' velas.' });
+      if (dropPct > (exCfg.adxDropPct || 25)) alerts.push({ type: 'info', text: 'ADX cae ' + dropPct.toFixed(0) + '% en ' + lookback + ' velas.' });
     }
 
     const divLb = exCfg.divergenceLookback || 8;

@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '6.0.0-scalping-anticipativo',
+  version: '6.1.0-scalping-momentum',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -14,43 +14,47 @@ window.AT_CONFIG = {
 
   scalping: {
     enabled: true,
-    entryCooldownMs: 300000,
+    entryCooldownMs: 180000,
     flipCooldownMs: 60000,
     lossCooldownMs: 900000,
-    maxSignalsPerHour: 12,
-    maxSignalsPerSession: 40,
+    maxSignalsPerHour: 15,
+    maxSignalsPerSession: 50,
     requireLiveTick: true,
     minSignalScore: 65,
     minValidTfs: 2,
-    maxAdxForTrend: 40,
-    rejectIfAdxExhausted: true,
-    rejectIfRsiExtreme: true,
+    maxAdxForTrend: 50,
+    rejectIfAdxExhausted: false,
+    rejectIfRsiExtreme: false,
     defaultVerdict: 'ESPERAR'
+  },
+
+  breakout: {
+    enabled: true,
+    minBodyAtrMult: 1.2,
+    minRangeAtrMult: 1.5,
+    minScore: 70,
+    strongScore: 85,
+    lookbackSwings: 5
   },
 
   reversal: {
     enabled: true,
-    rsiBuyZone: 32,
-    rsiSellZone: 68,
-    rsiExitBuy: 38,
-    rsiExitSell: 62,
+    rsiBuyZone: 30,
+    rsiSellZone: 70,
     requireDivergence: true,
     requireSweep: true,
     requireCandleRejection: true,
     minScore: 65,
-    strongScore: 80,
-    adxExhaustion: 35,
-    adxDropPct: 15
+    strongScore: 80
   },
 
   continuation: {
     enabled: true,
-    emaProximityAtr: 0.5,
-    vwapProximityAtr: 0.75,
-    requireCandleRejection: true,
+    emaProximityAtr: 0.6,
+    vwapProximityAtr: 0.8,
+    requireCandleRejection: false,
     minScore: 60,
-    strongScore: 75,
-    maxAdx: 40
+    strongScore: 75
   },
 
   symbols: {
@@ -74,16 +78,16 @@ window.AT_CONFIG = {
   vwap: {
     enabled: true,
     anchor: 'session',
-    requireAlignment: true,
+    requireAlignment: false,
     proximityAtrMult: 0.75,
-    rejectDistanceAtrMult: 2.5
+    rejectDistanceAtrMult: 3.5
   },
 
   regime: {
     adxPeriod: 14,
     adxMin: 18,
     adxStrong: 25,
-    adxMax: 40,
+    adxMax: 50,
     emaPeriods: [9, 21, 50],
     emaStackRequired: true,
     emaSeparationMinPct: 0.08,
@@ -95,7 +99,7 @@ window.AT_CONFIG = {
     minimumValidTfs: 2,
     weightedMajority: 0.55,
     thresholds: { strong: 60, moderate: 40 },
-    adxNormalizationCeiling: 30,
+    adxNormalizationCeiling: 40,
     tieBreak: 'higher_tf'
   },
 
@@ -144,22 +148,22 @@ window.AT_CONFIG = {
     entryWindowLabel: 'ENTRY WINDOW',
     stopBandAtrMult: 0.55,
     targetBandAtrMult: 1.2,
-    requireHtfAlignment: true,
+    requireHtfAlignment: false,
     minComponents: 2
   },
 
   exhaustion: {
     rsiPeriod: 14,
-    rsiOverbought: 75,
-    rsiOversold: 25,
-    adxDropPct: 20,
+    rsiOverbought: 85,
+    rsiOversold: 15,
+    adxDropPct: 25,
     lookbackCandles: 5,
     volumeDropPct: 40,
     volumeLookback: 15,
     divergenceLookback: 8,
     divergenceGap: 1,
-    consensusOverextension: 95,
-    dangerBlockThreshold: 2
+    consensusOverextension: 98,
+    dangerBlockThreshold: 3
   },
 
   smc: {
@@ -193,7 +197,7 @@ window.AT_CONFIG = {
     swingBodyRatioMin: 0.5,
     requireBosForOte: false,
     requirePremiumDiscount: false,
-    htfZoneRequired: true,
+    htfZoneRequired: false,
     htfZoneTfs: ['15m', '1h'],
     weights: { mss: 30, sweep: 25, fvg: 15, ob: 15, ote: 15 },
     bosWeightFactor: 0.5,
