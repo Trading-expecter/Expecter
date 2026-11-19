@@ -6,6 +6,11 @@
   const A = AT.analysis;
   const SMC = AT.smcEngine;
   const CFG = window.AT_CONFIG;
+  const TIM = (CFG && CFG.timings) || {};
+
+  const UPDATE_INTERVAL_MS = TIM.updateIntervalMs || 1000;
+  const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
+  const MAX_SIGNAL_LOG = 500;
 
   const state = {
     symbol: 'XAUUSD',
@@ -15,44 +20,34 @@
     analysis: null,
     smcResult: null,
     feedMode: 'off',
-    loading: true,
+    loading: false,
     requestId: 0,
-    analysisTimer: null,
-    lastAnalysisAt: 0,
     signalLog: [],
-    currentTool: 'cursor',
+    lastSignalKey: '',
+    lastSignalAt: 0,
     drawMenuOpen: false,
-    tickBuffer: new Map(),
-    rafId: 0,
     gapRefill: {},
-    verdict: {
-      committed: {
-        state: 'wait',
-        label: 'ESPERAR',
-        reason: 'Iniciando...',
-        risk: null,
-        sizing: null,
-        direction: 0,
-        score: 0,
-        confidence: 0,
-        smcGrade: null,
-        smcScore: 0,
-        at: 0
-      },
-      pending: {
-        state: null,
-        count: 0,
-        firstSeenAt: 0
-      }
-    }
+    lastRenderHash: '',
+    lastAnalysisAt: 0,
+    lastPriceCheckAt: 0,
+    cycleSkipCount: 0,
+    cycleErrorCount: 0
+  };
+
+  const loop = {
+    masterId: 0,
+    priceId: 0,
+    locked: false,
+    stopped: true
   };
 
   let chart = null;
   let feed = null;
+  let fsAbort = null;
+  let rafId = 0;
+  let rafPending = false;
 
-  const MAX_SIGNAL_LOG = 500;
-
-  function $(id) { return document.getElementById(id); }
+  function $ (id) { return document.getElementById(id); }
 
   function esc(v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -62,12 +57,12 @@
 
   function fmt(sym, price) {
     const inst = CFG.symbols[sym];
-    if (!inst || price == null || !Number.isFinite(price)) return '0.00';
+    if (!inst || price == null || !Number.isFinite(price)) return '—';
     return Number(price).toFixed(inst.digits);
   }
 
   function sgn(v, d) {
-    if (v == null || !Number.isFinite(v)) return '+0.00';
+    if (v == null || !Number.isFinite(v)) return '—';
     return (v >= 0 ? '+' : '') + Number(v).toFixed(d);
   }
 
@@ -77,168 +72,19 @@
     return (s / 100) * 90 * dir;
   }
 
-  function verdictCfg() { return CFG.verdict || {}; }
-
-  function resetVerdict() {
-    state.verdict.committed = {
-      state: 'wait',
-      label: 'ESPERAR',
-      reason: 'Reiniciando análisis...',
-      risk: null,
-      sizing: null,
-      direction: 0,
-      score: 0,
-      confidence: 0,
-      smcGrade: null,
-      smcScore: 0,
-      at: 0
-    };
-    state.verdict.pending = { state: null, count: 0, firstSeenAt: 0 };
+  function currentTool() {
+    return chart && typeof chart.getTool === 'function' ? chart.getTool() : 'cursor';
   }
 
-  function committedDirection() {
-    const s = state.verdict.committed.state;
-    if (s === 'buy') return 1;
-    if (s === 'sell') return -1;
-    return 0;
-  }
-
-  function commitVerdict(proposed, now) {
-    const vCfg = verdictCfg();
-    const minHoldMs = vCfg.minHoldMs != null ? vCfg.minHoldMs : 45000;
-    const minConfirmations = vCfg.minConfirmations != null ? vCfg.minConfirmations : 2;
-    const minPendingMs = vCfg.minPendingMs != null ? vCfg.minPendingMs : 5000;
-    const v = state.verdict;
-    const committed = v.committed;
-
-    if (!proposed.marketOpen) {
-      v.committed = {
-        state: 'wait',
-        label: 'ESPERAR',
-        reason: proposed.reason || 'Mercado cerrado.',
-        risk: null,
-        sizing: null,
-        direction: 0,
-        score: proposed.score || 0,
-        confidence: 0,
-        smcGrade: proposed.smcGrade || null,
-        smcScore: proposed.smcScore || 0,
-        at: now
-      };
-      v.pending = { state: null, count: 0, firstSeenAt: 0 };
-      return;
-    }
-
-    if (proposed.state === committed.state) {
-      committed.reason = proposed.reason;
-      committed.risk = proposed.risk;
-      committed.sizing = proposed.sizing;
-      committed.direction = proposed.direction;
-      committed.score = proposed.score;
-      committed.confidence = proposed.confidence;
-      committed.smcGrade = proposed.smcGrade;
-      committed.smcScore = proposed.smcScore;
-      v.pending = { state: null, count: 0, firstSeenAt: 0 };
-      return;
-    }
-
-    if (v.pending.state !== proposed.state) {
-      v.pending.state = proposed.state;
-      v.pending.count = 1;
-      v.pending.firstSeenAt = now;
-      return;
-    }
-
-    v.pending.count++;
-
-    const sinceCommit = now - committed.at;
-    const sincePending = now - v.pending.firstSeenAt;
-    const enoughCount = v.pending.count >= minConfirmations;
-    const enoughHold = sinceCommit >= minHoldMs;
-    const enoughPending = sincePending >= minPendingMs;
-
-    if (enoughCount && enoughHold && enoughPending) {
-      v.committed = {
-        state: proposed.state,
-        label: proposed.label,
-        reason: proposed.reason,
-        risk: proposed.risk,
-        sizing: proposed.sizing,
-        direction: proposed.direction,
-        score: proposed.score,
-        confidence: proposed.confidence,
-        smcGrade: proposed.smcGrade || null,
-        smcScore: proposed.smcScore || 0,
-        at: now
-      };
-      v.pending = { state: null, count: 0, firstSeenAt: 0 };
-    }
-  }
-
-  function flushTicks() {
-    if (state.rafId) return;
-    state.rafId = requestAnimationFrame(function () {
-      state.rafId = 0;
-      const buffer = state.tickBuffer;
-      state.tickBuffer = new Map();
-      buffer.forEach(function (tick) { processTick(tick); });
+  function scheduleRender() {
+    if (rafPending) return;
+    rafPending = true;
+    rafId = requestAnimationFrame(function () {
+      rafPending = false;
+      rafId = 0;
+      try { renderAll(false); }
+      catch (e) { console.error('[app] renderAll excepción:', e); }
     });
-  }
-
-  function refillGap(tf) {
-    if (!state.gapRefill) state.gapRefill = {};
-    if (state.gapRefill[tf]) return;
-    state.gapRefill[tf] = true;
-
-    const myId = state.requestId;
-    D.fetchBars(state.symbol, tf, 500).then(function (bars) {
-      if (state.requestId !== myId) return;
-      if (bars && bars.length) {
-        state.bars[tf] = bars;
-        if (chart && state.tf === tf) {
-          const inst = CFG.symbols[state.symbol];
-          if (inst) chart.setData(bars, { tf: state.tf, digits: inst.digits, symbol: state.symbol });
-        }
-        scheduleAnalysis(true);
-      }
-    }).catch(function () { void 0; }).then(function () {
-      if (state.gapRefill) delete state.gapRefill[tf];
-    });
-  }
-
-  function processTick(tick) {
-    if (!tick || !tick.symbol) return;
-    state.ticks[tick.symbol] = tick;
-
-    if (tick.symbol !== state.symbol) {
-      updateSymbolBarPrices();
-      return;
-    }
-
-    if (tick.stale) return;
-
-    let newBar = false;
-    const tfMs = D.TF;
-    Object.keys(state.bars).forEach(function (tf) {
-      const ms = tfMs[tf];
-      if (ms && state.bars[tf] && state.bars[tf].length) {
-        const result = D.applyTick(state.bars[tf], ms, tick.mid, tick.ts);
-        if (result === 'new') newBar = true;
-        if (result === 'gap') { newBar = true; refillGap(tf); }
-      }
-    });
-
-    if (chart) {
-      const bars = state.bars[state.tf];
-      const inst = CFG.symbols[state.symbol];
-      if (bars && bars.length && inst) {
-        chart.setData(bars, { tf: state.tf, digits: inst.digits, symbol: state.symbol });
-      }
-    }
-
-    updateSymbolBarPrices();
-    renderPrice();
-    scheduleAnalysis(newBar);
   }
 
   function renderStatus() {
@@ -246,11 +92,11 @@
     const txt = $('statusText');
     if (!dot || !txt) return;
     const m = state.feedMode;
-    let cls = '';
-    let msg = 'Conectando…';
+    let cls = '', msg = 'Conectando…';
     if (m === 'live') { cls = 'ok'; msg = 'En vivo'; }
-    else if (m === 'polling') { cls = 'warn'; msg = 'Sincronizando'; }
+    else if (m === 'polling') { cls = 'warn'; msg = 'Sondeo'; }
     else if (m === 'reconnecting') { cls = 'warn'; msg = 'Reconectando…'; }
+    else if (m === 'stale') { cls = 'warn'; msg = 'Datos obsoletos'; }
     else if (m === 'error') { cls = 'bad'; msg = 'Sin conexión'; }
     dot.className = 'dot ' + cls;
     txt.textContent = msg;
@@ -261,27 +107,35 @@
     const bars = state.bars[state.tf] || [];
     const price = t ? t.mid : (bars.length ? bars[bars.length - 1].c : null);
 
-    $('priceBig').textContent = fmt(state.symbol, price);
+    const el = $('priceBig');
+    if (el) el.textContent = fmt(state.symbol, price);
 
     const chg = $('priceChg');
-    if (t && t.dayPct != null && t.state !== 'closed') {
-      chg.textContent = sgn(t.dayPct, 2) + '%';
-      chg.className = 'price-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
-    } else {
-      chg.textContent = '0.00%';
-      chg.className = 'price-chg';
+    if (chg) {
+      if (t && t.dayPct != null && t.state !== 'closed') {
+        chg.textContent = sgn(t.dayPct, 2) + '% hoy';
+        chg.className = 'price-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
+      } else chg.textContent = '';
     }
 
-    $('priceSub').textContent = t
-      ? 'Bid ' + fmt(state.symbol, t.bid) + ' · Ask ' + fmt(state.symbol, t.ask) + ' · Spread ' + fmt(state.symbol, t.spread)
-      : 'Esperando precio...';
+    const sub = $('priceSub');
+    if (sub) {
+      sub.textContent = t
+        ? 'Bid ' + fmt(state.symbol, t.bid) + ' · Ask ' + fmt(state.symbol, t.ask) + ' · Spread ' + fmt(state.symbol, t.spread)
+        : 'Esperando precio…';
+    }
 
     const sb = $('sessionBadge');
-    const a = state.analysis;
-    const open = a ? a.marketOpen : true;
-    const label = a ? a.sessionLabel : 'Escaneando';
-    sb.textContent = label;
-    sb.className = 'session-badge ' + (open ? 'ok' : 'bad');
+    if (sb) {
+      const a = state.analysis;
+      const open = a ? a.marketOpen : false;
+      const label = a ? a.sessionLabel : '—';
+      sb.textContent = label;
+      sb.className = 'session-badge ' + (open ? 'ok' : 'bad');
+      sb.title = open
+        ? (a && a.highLiquidity ? 'Mercado abierto, liquidez alta' : 'Mercado abierto, liquidez normal')
+        : 'Mercado cerrado';
+    }
   }
 
   function renderGauge() {
@@ -289,19 +143,18 @@
     const needle = $('needle');
     const label = $('gaugeLabel');
     const score = $('gaugeScore');
+    if (!needle || !label || !score) return;
 
     if (!a) {
       needle.style.opacity = '0.3';
-      label.textContent = 'Cargando...';
+      label.textContent = 'Cargando…';
       label.className = 'gauge-label neutral';
-      score.textContent = 'Consenso: 0%';
+      score.textContent = '';
       return;
     }
 
     needle.style.opacity = '1';
-    const angle = needleAngle(a.consensusScore, a.overallDirection);
-    needle.setAttribute('transform', 'rotate(' + angle.toFixed(1) + ' 100 100)');
-
+    needle.setAttribute('transform', 'rotate(' + needleAngle(a.consensusScore, a.overallDirection).toFixed(1) + ' 100 100)');
     label.textContent = a.consensusText;
     label.className = 'gauge-label ' + a.consensusLabel;
 
@@ -311,26 +164,29 @@
   }
 
   function renderVerdict() {
+    const a = state.analysis;
     const badge = $('verdictBadge');
     const reason = $('verdictReason');
-    const sizingEl = $('verdictSizing');
-    const c = state.verdict.committed;
+    if (!badge || !reason) return;
 
-    badge.textContent = c.label || 'ESPERAR';
-    badge.className = 'verdict-badge ' + (c.state || 'wait');
-    reason.textContent = c.reason || 'Analizando condiciones...';
-
-    if (sizingEl) {
-      if (c.sizing && (c.state === 'buy' || c.state === 'sell')) {
-        sizingEl.hidden = false;
-        sizingEl.textContent = 'Lotes: ' + c.sizing.lots.toFixed(2) +
-          ' · Riesgo: $' + c.sizing.riskAmount.toFixed(2) +
-          ' (' + c.sizing.riskPct + '%)';
-      } else {
-        sizingEl.hidden = true;
-        sizingEl.textContent = '';
-      }
+    if (!a) {
+      badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">◷</span><span class="verdict-text">ESPERAR</span>';
+      badge.className = 'verdict-badge wait';
+      reason.textContent = 'Esperando datos del mercado...';
+      return;
     }
+
+    const icon = a.verdictState === 'buy' ? '▲' : a.verdictState === 'sell' ? '▼' : '◷';
+    badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
+      '<span class="verdict-text">' + esc(a.verdictLabel) + '</span>';
+    badge.className = 'verdict-badge ' + a.verdictState;
+
+    let text = a.verdictReason || '';
+    if (a.verdictRisk && a.verdictRisk.valid) {
+      const r = a.verdictRisk;
+      text += ' · Stop ' + fmt(state.symbol, r.stop) + ' · Target ' + fmt(state.symbol, r.target);
+    }
+    reason.textContent = text;
   }
 
   function renderSMC() {
@@ -338,129 +194,114 @@
     const scoreEl = $('smcScore');
     const barEl = $('smcBarFill');
     const reasonsEl = $('smcReasons');
-    const seqEl = $('smcSequence');
+    if (!scoreEl || !barEl || !reasonsEl) return;
 
     if (!smc) {
       scoreEl.textContent = '0%';
       scoreEl.style.color = 'var(--accent)';
       barEl.style.width = '0%';
       barEl.style.backgroundColor = 'var(--accent)';
-      reasonsEl.innerHTML = '<li class="muted">Escaneando bloques institucionales...</li>';
-      if (seqEl) { seqEl.hidden = true; seqEl.textContent = ''; }
+      reasonsEl.innerHTML = '<li class="muted">Esperando datos...</li>';
       return;
     }
 
     scoreEl.textContent = smc.score.toFixed(0) + '%';
-    barEl.style.width = Math.max(0, Math.min(100, smc.score)) + '%';
+    barEl.style.width = smc.score + '%';
 
-    if (smc.score >= 70) {
-      barEl.style.backgroundColor = 'var(--up)';
-      scoreEl.style.color = 'var(--up)';
-    } else if (smc.score >= 45) {
-      barEl.style.backgroundColor = 'var(--warn)';
-      scoreEl.style.color = 'var(--warn)';
-    } else {
-      barEl.style.backgroundColor = 'var(--down)';
-      scoreEl.style.color = 'var(--down)';
-    }
+    if (smc.score >= 80) { barEl.style.backgroundColor = 'var(--up)'; scoreEl.style.color = 'var(--up)'; }
+    else if (smc.score >= 50) { barEl.style.backgroundColor = 'var(--warn)'; scoreEl.style.color = 'var(--warn)'; }
+    else { barEl.style.backgroundColor = 'var(--down)'; scoreEl.style.color = 'var(--down)'; }
 
     const lines = [];
     const bd = smc.breakdown || {};
-    const order = ['sequence', 'mss', 'sweep', 'fvg', 'ob', 'ote', 'penalty', 'vetoed'];
+    const order = ['mss', 'sweep', 'fvg', 'ob', 'ote', 'htfBias', 'penalty', 'vetoed'];
     const names = {
-      sequence: 'Secuencia', mss: 'Estructura', sweep: 'Sweep', fvg: 'FVG',
-      ob: 'Order Block', ote: 'OTE', penalty: 'Penalización', vetoed: 'Veto'
+      mss: 'Estructura', sweep: 'Sweep', fvg: 'FVG', ob: 'Order Block',
+      ote: 'OTE', htfBias: 'Sesgo HTF', penalty: 'Penalización', vetoed: 'Veto'
     };
 
     order.forEach(function (key) {
       const e = bd[key];
       if (!e || !e.weighted) return;
-      const sign = (key === 'penalty' || key === 'vetoed') ? '−' : '+';
-      const val = Math.abs(e.weighted).toFixed(1);
-      const detail = e.reason ? ' — ' + e.reason : '';
-      lines.push('<li>' + esc(names[key] || key) + ': ' + sign + val + esc(detail) + '</li>');
+      const sign = (key === 'penalty' || key === 'vetoed') ? '−' : (e.weighted < 0 ? '−' : '+');
+      lines.push('<li>' + esc(names[key] || key) + ': ' + sign + Math.abs(e.weighted).toFixed(1) +
+        (e.reason ? ' — ' + esc(e.reason) : '') + '</li>');
     });
 
-    if (lines.length === 0) lines.push('<li class="muted">Sin componentes de alta probabilidad.</li>');
+    if (lines.length === 0) lines.push('<li class="muted">Sin componentes ponderados.</li>');
+
+    if (smc.vetoes && smc.vetoes.length) {
+      smc.vetoes.forEach(function (v) { lines.push('<li style="color: var(--warn)">⚠ ' + esc(v) + '</li>'); });
+    }
+
+    if (typeof smc.riskMultiplier === 'number' && !smc.vetoed) {
+      const pct = Math.round(smc.riskMultiplier * 100);
+      const color = pct >= 100 ? 'var(--up)' : pct >= 50 ? 'var(--warn)' : 'var(--down)';
+      lines.push('<li style="color: ' + color + '">Riesgo sugerido: ' + pct + '% del máximo.</li>');
+    }
 
     reasonsEl.innerHTML = lines.join('');
-
-    if (seqEl) {
-      if (smc.sequence && smc.sequence.valid) {
-        seqEl.hidden = false;
-        seqEl.textContent = 'Secuencia institucional: Sweep → MSS → Zona';
-      } else {
-        seqEl.hidden = true;
-        seqEl.textContent = '';
-      }
-    }
   }
 
   function renderAlerts() {
     const a = state.analysis;
     const card = $('alertCard');
     const list = $('alertList');
+    if (!card || !list) return;
 
     if (!a) { card.hidden = true; list.innerHTML = ''; return; }
-
     const alerts = a.alerts || [];
     if (alerts.length === 0) { card.hidden = true; list.innerHTML = ''; return; }
 
     card.hidden = false;
-    list.innerHTML = alerts.map(function (alert) {
-      return '<li><strong>[' + esc(alert.type.toUpperCase()) + ']</strong> ' + esc(alert.text) + '</li>';
+    list.innerHTML = alerts.map(function (al) {
+      return '<li><strong>[' + esc(al.type.toUpperCase()) + ']</strong> ' + esc(al.text) + '</li>';
     }).join('');
   }
 
   function renderMetrics() {
     const a = state.analysis;
-    if (!a) {
-      $('macroTrend').textContent = 'Calculando...';
-      $('macroMomentum').textContent = 'Calculando...';
-      $('macroVolatility').textContent = 'Calculando...';
-      $('macroStructure').textContent = 'Lateral';
-      $('macroStructure').className = 'metric-val';
-      return;
-    }
+    if (!a) return;
 
     const tEl = $('macroTrend');
-    let trendTxt = a.macroTrend || 'Débil';
-    if (Number.isFinite(a.avgAdxAligned) && a.avgAdxAligned > 0) {
-      trendTxt += ' (' + a.avgAdxAligned.toFixed(1) + ')';
+    if (tEl) {
+      let txt = a.macroTrend || '—';
+      if (Number.isFinite(a.avgAdxAligned) && a.avgAdxAligned > 0) txt += ' (' + a.avgAdxAligned.toFixed(1) + ')';
+      tEl.textContent = txt;
     }
-    tEl.textContent = trendTxt;
-
-    $('macroMomentum').textContent = a.macroMomentum || 'Neutro';
-    $('macroVolatility').textContent = a.macroVolatility || 'Normal';
+    const mEl = $('macroMomentum');
+    if (mEl) mEl.textContent = a.macroMomentum || '—';
+    const vEl = $('macroVolatility');
+    if (vEl) vEl.textContent = a.macroVolatility || '—';
 
     const sEl = $('macroStructure');
-    let structTxt = 'Lateral';
-    let structCls = 'metric-val';
-    if (a.consensusLabel !== 'neutral' && a.overallDirection !== 0) {
-      structTxt = a.overallDirection === 1 ? 'Alcista' : 'Bajista';
-      structCls += ' ' + (a.overallDirection === 1 ? 'up' : 'down');
+    if (sEl) {
+      let txt = 'Lateral', cls = 'metric-val';
+      if (a.consensusLabel !== 'neutral' && a.overallDirection !== 0) {
+        txt = a.overallDirection === 1 ? 'Alcista' : 'Bajista';
+        cls += ' ' + (a.overallDirection === 1 ? 'up' : 'down');
+        if (Number.isFinite(a.avgAdxOpposed) && a.avgAdxOpposed > 0) txt += ' · contra ' + a.avgAdxOpposed.toFixed(1);
+      }
+      sEl.textContent = txt;
+      sEl.className = cls;
     }
-    sEl.textContent = structTxt;
-    sEl.className = structCls;
   }
 
   function renderMtf() {
     const a = state.analysis;
     const box = $('mtf');
-    const allTfs = CFG.timeframes.list || ['5m', '15m', '1h'];
+    if (!box) return;
+    const allTfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
     const optional = CFG.timeframes.optional || [];
 
     if (box.children.length !== allTfs.length) {
       let html = '';
       allTfs.forEach(function (tf) {
         const isOpt = optional.indexOf(tf) !== -1;
-        const selected = tf === state.tf ? 'true' : 'false';
         html += '<button type="button" role="tab" data-tf="' + esc(tf) + '"' +
-          ' aria-selected="' + selected + '"' +
+          ' aria-selected="' + (tf === state.tf ? 'true' : 'false') + '"' +
           (isOpt ? ' data-optional="true"' : '') + '>' +
-          '<span class="tfn">' + esc(tf) + '</span>' +
-          '<span class="lab neutral">...</span>' +
-          '</button>';
+          '<span class="tfn">' + esc(tf) + '</span><span class="lab neutral">—</span></button>';
       });
       box.innerHTML = html;
     }
@@ -468,21 +309,18 @@
     Array.prototype.forEach.call(box.children, function (btn) {
       const tf = btn.dataset.tf;
       const tfData = a && a.perTf ? a.perTf[tf] : null;
-      const active = tf === state.tf;
-      if (active) { btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); }
-      else { btn.classList.remove('active'); btn.setAttribute('aria-selected', 'false'); }
+      btn.classList.toggle('active', tf === state.tf);
+      btn.setAttribute('aria-selected', tf === state.tf ? 'true' : 'false');
 
       const lab = btn.querySelector('.lab');
       if (!lab) return;
-
       if (tfData) {
         if (tfData.direction === 1) { lab.textContent = 'Alcista'; lab.className = 'lab buy'; }
         else { lab.textContent = 'Bajista'; lab.className = 'lab sell'; }
-        if (tfData.regimeValid === false) lab.className += ' weak';
-      } else {
-        lab.textContent = '...';
-        lab.className = 'lab neutral';
-      }
+        if (tfData.regimeValid === false) { lab.textContent += ' ·'; lab.title = 'Régimen no válido'; }
+        else lab.title = '';
+      } else if (a) { lab.textContent = '—'; lab.className = 'lab neutral'; }
+      else { lab.textContent = '…'; lab.className = 'lab neutral'; }
     });
   }
 
@@ -490,11 +328,7 @@
     const a = state.analysis;
     const el = $('conclusionText');
     if (!el) return;
-    if (!a) {
-      el.textContent = 'Escaneando el mercado en busca de entradas perfectas...';
-      return;
-    }
-    el.textContent = a.conclusion;
+    el.textContent = a ? a.conclusion : 'Esperando datos suficientes para generar un veredicto...';
   }
 
   function renderChart() {
@@ -503,13 +337,28 @@
     const inst = CFG.symbols[state.symbol];
     if (!inst) return;
     chart.setData(bars, { tf: state.tf, digits: inst.digits, symbol: state.symbol });
-
     const z = state.smcResult && state.smcResult.zones;
-    const hasZones = z && (z.ob || z.fvg || z.ote);
-    chart.setZones(hasZones ? z : null);
+    chart.setZones(z && (z.ob || z.fvg || z.ote) ? z : null);
   }
 
-  function renderAll() {
+  function computeRenderHash() {
+    const a = state.analysis;
+    if (!a) return 'none';
+    return [
+      state.symbol, state.tf,
+      a.verdictState, a.consensusLabel,
+      Math.round(a.consensusScore || 0), Math.round(a.confidence || 0),
+      state.smcResult ? Math.round(state.smcResult.score || 0) : 0,
+      state.smcResult ? state.smcResult.grade || '' : '',
+      (a.alerts || []).length, state.feedMode
+    ].join('|');
+  }
+
+  function renderAll(force) {
+    const hash = computeRenderHash();
+    if (!force && hash === state.lastRenderHash) { renderPrice(); return; }
+    state.lastRenderHash = hash;
+
     renderStatus();
     renderPrice();
     renderGauge();
@@ -526,17 +375,29 @@
     const t = state.ticks[state.symbol];
     if (t && Number.isFinite(t.mid)) return t.mid;
     const bars = state.bars[state.tf];
-    if (bars && bars.length) return bars[bars.length - 1].c;
-    return null;
+    return bars && bars.length ? bars[bars.length - 1].c : null;
   }
 
-  function logSignalIfChanged(now) {
-    const c = state.verdict.committed;
-    if (c.state !== 'buy' && c.state !== 'sell') return;
-    if (!c.risk || !c.risk.valid) return;
+  function makeSignalKey(analysis) {
+    return [
+      state.symbol, analysis.entryTf, analysis.overallDirection,
+      analysis.verdictState,
+      Math.round((analysis.consensusScore || 0) / 10)
+    ].join('::');
+  }
 
-    const last = state.signalLog[state.signalLog.length - 1];
-    if (last && last.ts === c.at && last.direction === c.direction) return;
+  function logSignalIfChanged(analysis) {
+    if (!analysis) return;
+    const curr = analysis.verdictState;
+    if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
+    if (!analysis.verdictRisk) return;
+
+    const now = Date.now();
+    const maxAge = TIM.maxSignalAgeMs || 5000;
+    const key = makeSignalKey(analysis);
+
+    if (key === state.lastSignalKey && (now - state.lastSignalAt) < maxAge) return;
+    if (key !== state.lastSignalKey && (now - state.lastSignalAt) < 1500) return;
 
     const entryPrice = currentEntryPrice();
     if (entryPrice == null) return;
@@ -544,121 +405,163 @@
     state.signalLog.push({
       ts: now,
       symbol: state.symbol,
-      tf: state.tf,
-      direction: c.direction,
-      entryPrice: entryPrice,
-      stopPrice: c.risk.stop,
-      targetPrice: c.risk.target,
-      rr: c.risk.rr,
-      lots: c.sizing ? c.sizing.lots : null,
-      riskAmount: c.sizing ? c.sizing.riskAmount : null,
-      score: c.score,
-      confidence: c.confidence,
-      smcGrade: c.smcGrade,
-      smcScore: c.smcScore
+      tf: analysis.entryTf,
+      direction: analysis.overallDirection,
+      entryPrice,
+      stopPrice: analysis.verdictRisk.stop,
+      targetPrice: analysis.verdictRisk.target,
+      rr: analysis.verdictRisk.rr,
+      score: analysis.consensusScore,
+      confidence: analysis.confidence
     });
     if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
+
+    state.lastSignalKey = key;
+    state.lastSignalAt = now;
   }
 
-  function runAnalysis() {
-    const now = Date.now();
-    state.lastAnalysisAt = now;
-
-    const res = A.analyze(state.bars, {
-      currentTf: state.tf,
-      symbol: state.symbol,
-      previousDirection: committedDirection()
+  function updateBarsFromTick(tick) {
+    const tfMs = D.TF;
+    let newBar = false;
+    Object.keys(state.bars).forEach(function (tf) {
+      const ms = tfMs[tf];
+      if (ms && state.bars[tf] && state.bars[tf].length) {
+        const result = D.applyTick(state.bars[tf], ms, tick.mid, tick.ts);
+        if (result === 'new') newBar = true;
+        if (result === 'gap') { newBar = true; refillGap(tf); }
+      }
     });
-
-    const entryTf = res.entryTf || state.tf;
-    const entryBarsRaw = state.bars[entryTf];
-
-    if (entryBarsRaw && entryBarsRaw.length > 15 && res.overallDirection !== 0) {
-      const smcCtx = {
-        confidence: res.confidence,
-        marketOpen: res.marketOpen,
-        sessionActive: res.highLiquidity,
-        entryTf: entryTf
-      };
-      state.smcResult = SMC.evaluate(entryBarsRaw, res.overallDirection, smcCtx);
-    } else {
-      state.smcResult = {
-        score: 0,
-        label: 'Escaneando',
-        reasons: ['Sin dirección o historial suficiente.'],
-        vetoes: [],
-        breakdown: {},
-        zones: { ob: null, fvg: null, ote: null },
-        direction: 0,
-        trend: 'Débil',
-        vetoed: false,
-        grade: null,
-        activeComponents: 0,
-        sequence: null
-      };
-    }
-
-    state.analysis = A.applySmc(res, state.smcResult);
-
-    const proposed = {
-      state: state.analysis.verdictState,
-      label: state.analysis.verdictLabel,
-      reason: state.analysis.verdictReason,
-      risk: state.analysis.verdictRisk,
-      sizing: state.analysis.positionSizing,
-      direction: state.analysis.overallDirection,
-      score: state.analysis.consensusScore,
-      confidence: state.analysis.confidence,
-      smcGrade: state.analysis.smcGrade,
-      smcScore: state.analysis.smcScore,
-      marketOpen: state.analysis.marketOpen
-    };
-
-    const before = state.verdict.committed.state;
-    const beforeAt = state.verdict.committed.at;
-    commitVerdict(proposed, now);
-    if (state.verdict.committed.state !== before || state.verdict.committed.at !== beforeAt) {
-      logSignalIfChanged(now);
-    }
-
-    renderAll();
+    return newBar;
   }
 
-  function scheduleAnalysis(force) {
-    const throttleMs = (CFG.analysis && CFG.analysis.throttleMs) || 1500;
-    const elapsed = Date.now() - state.lastAnalysisAt;
+  function refillGap(tf) {
+    if (state.gapRefill[tf]) return;
+    state.gapRefill[tf] = true;
+    const myId = state.requestId;
+    D.fetchBars(state.symbol, tf, 1000).then(function (bars) {
+      if (state.requestId !== myId || !bars || !bars.length) return;
+      state.bars[tf] = bars;
+      if (chart && state.tf === tf) {
+        const inst = CFG.symbols[state.symbol];
+        if (inst) chart.setData(bars, { tf: state.tf, digits: inst.digits, symbol: state.symbol });
+      }
+    }).catch(function () { void 0; }).then(function () { delete state.gapRefill[tf]; });
+  }
 
-    if (force) {
-      if (state.analysisTimer) { clearTimeout(state.analysisTimer); state.analysisTimer = null; }
-      runAnalysis();
+  function processTick(tick) {
+    if (!tick || !tick.symbol) return;
+    state.ticks[tick.symbol] = tick;
+
+    if (tick.symbol !== state.symbol) { updateSymbolBarPrices(); return; }
+    if (tick.stale) return;
+
+    updateBarsFromTick(tick);
+    updateSymbolBarPrices();
+    scheduleRender();
+  }
+
+  function onTick(tick) {
+    if (!tick || !tick.symbol) return;
+    processTick(tick);
+  }
+
+  function runAnalysisStep() {
+    let res = null;
+    try {
+      res = A.analyze(state.bars, { currentTf: state.tf, symbol: state.symbol });
+    } catch (e) {
+      console.error('[app] A.analyze excepción:', e);
+      state.cycleErrorCount++;
+    }
+    state.analysis = res;
+
+    if (!res) { state.smcResult = null; return; }
+
+    try {
+      const entryTf = res.entryTf || state.tf;
+      const raw = state.bars[entryTf];
+      if (raw && raw.length > 50) {
+        const useClosed = (CFG.analysis && CFG.analysis.useClosedCandlesOnly) !== false;
+        const closed = (useClosed && raw.length > 1) ? raw.slice(0, -1) : raw;
+        state.smcResult = SMC.evaluate(closed, res.overallDirection, {
+          confidence: res.confidence,
+          marketOpen: res.marketOpen,
+          sessionActive: res.highLiquidity,
+          entryTf,
+          htfDirection: res.overallDirection
+        });
+      } else {
+        state.smcResult = {
+          score: 0, label: 'Sin datos', reasons: ['Esperando velas históricas…'],
+          vetoes: ['Historial insuficiente'], breakdown: {},
+          zones: { ob: null, fvg: null, ote: null, allOBs: [], allFVGs: [] },
+          direction: 0, trend: 'Débil', vetoed: true, grade: 'Débil',
+          riskMultiplier: 0, blockerInfo: null, activeComponents: 0
+        };
+      }
+    } catch (e) {
+      console.error('[app] SMC.evaluate excepción:', e);
+      state.smcResult = null;
+      state.cycleErrorCount++;
+    }
+
+    logSignalIfChanged(res);
+  }
+
+  function masterCycle() {
+    if (loop.locked || loop.stopped) {
+      if (loop.locked) state.cycleSkipCount++;
       return;
     }
-    if (state.analysisTimer) return;
-    if (elapsed >= throttleMs) { runAnalysis(); return; }
-    state.analysisTimer = setTimeout(function () {
-      state.analysisTimer = null;
-      runAnalysis();
-    }, throttleMs - elapsed);
+    loop.locked = true;
+
+    try { runAnalysisStep(); }
+    catch (e) { console.error('[app] masterCycle análisis excepción:', e); }
+
+    scheduleRender();
+
+    state.lastAnalysisAt = Date.now();
+    loop.locked = false;
+  }
+
+  function priceCheckCycle() {
+    if (loop.stopped) return;
+    state.lastPriceCheckAt = Date.now();
+    try { renderPrice(); }
+    catch (e) { console.error('[app] priceCheckCycle excepción:', e); }
+  }
+
+  function startMasterLoop() {
+    if (loop.masterId) return;
+    loop.stopped = false;
+    loop.masterId = setInterval(masterCycle, UPDATE_INTERVAL_MS);
+    loop.priceId = setInterval(priceCheckCycle, PRICE_CHECK_MS);
+  }
+
+  function stopMasterLoop() {
+    loop.stopped = true;
+    if (loop.masterId) { clearInterval(loop.masterId); loop.masterId = 0; }
+    if (loop.priceId) { clearInterval(loop.priceId); loop.priceId = 0; }
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; rafPending = false; }
   }
 
   function loadAllBars() {
     state.loading = true;
     state.requestId++;
     const myId = state.requestId;
-    const tfs = CFG.timeframes.list || ['5m', '15m', '1h'];
+    const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
 
     const tasks = tfs.map(function (tf) {
-      return function () { return D.fetchBars(state.symbol, tf, 500); };
+      return function (signal) { return D.fetchBars(state.symbol, tf, 1000, signal); };
     });
 
-    return D.pool(tasks, 3, 15000).then(function (results) {
+    return D.pool(tasks, 3, CFG.feed.globalTimeout || 20000).then(function (results) {
       if (state.requestId !== myId) return null;
       state.bars = {};
-      results.forEach(function (r, i) {
-        if (r && r.ok) state.bars[tfs[i]] = r.v;
-      });
+      results.forEach(function (r, i) { if (r && r.ok) state.bars[tfs[i]] = r.v; });
       state.loading = false;
-      runAnalysis();
+      runAnalysisStep();
+      renderAll(true);
       return results;
     }).catch(function (err) {
       if (state.requestId !== myId) return null;
@@ -666,14 +569,13 @@
       const partial = err && err.partial;
       if (partial && Array.isArray(partial) && partial.length === tfs.length) {
         state.bars = {};
-        partial.forEach(function (r, i) {
-          if (r && r.ok) state.bars[tfs[i]] = r.v;
-        });
-        runAnalysis();
+        partial.forEach(function (r, i) { if (r && r.ok) state.bars[tfs[i]] = r.v; });
+        runAnalysisStep();
+        renderAll(true);
         return partial;
       }
-      console.error('loadAllBars:', err.message || err);
-      renderAll();
+      console.error('[app] loadAllBars:', err && (err.message || err));
+      renderAll(true);
       return null;
     });
   }
@@ -685,26 +587,30 @@
     state.bars = {};
     state.analysis = null;
     state.smcResult = null;
+    state.lastSignalKey = '';
+    state.lastSignalAt = 0;
     state.gapRefill = {};
+    state.lastRenderHash = '';
     delete state.ticks[old];
-    resetVerdict();
 
-    Array.prototype.forEach.call($('symbolBar').children, function (b) {
-      if (b.dataset.sym === sym) {
-        b.classList.add('active');
-        b.setAttribute('aria-pressed', 'true');
-      } else {
-        b.classList.remove('active');
-        b.setAttribute('aria-pressed', 'false');
-      }
-    });
+    if (typeof A.invalidateCache === 'function') A.invalidateCache();
 
-    renderAll();
+    const bar = $('symbolBar');
+    if (bar) {
+      Array.prototype.forEach.call(bar.children, function (b) {
+        const on = b.dataset.sym === sym;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    renderAll(true);
     loadAllBars();
   }
 
   function buildSymbolBar() {
     const bar = $('symbolBar');
+    if (!bar) return;
     bar.innerHTML = '';
     Object.keys(CFG.symbols).forEach(function (sym) {
       const def = CFG.symbols[sym];
@@ -714,36 +620,27 @@
       b.className = 'sym' + (sym === state.symbol ? ' active' : '');
       b.setAttribute('aria-pressed', sym === state.symbol ? 'true' : 'false');
       b.dataset.sym = sym;
-      b.innerHTML = '<span class="sym-name">' + esc(sym) + '</span>' +
-                    '<span class="sym-price">0.00</span>' +
-                    '<span class="sym-chg muted">&nbsp;</span>';
+      b.innerHTML = '<span class="sym-name">' + esc(sym) + '</span><span class="sym-price">—</span><span class="sym-chg muted">&nbsp;</span>';
       b.addEventListener('click', function () { selectSymbol(sym); });
       bar.appendChild(b);
     });
   }
 
   function updateSymbolBarPrices() {
-    Array.prototype.forEach.call($('symbolBar').children, function (b) {
+    const bar = $('symbolBar');
+    if (!bar) return;
+    Array.prototype.forEach.call(bar.children, function (b) {
       const sym = b.dataset.sym;
       const t = state.ticks[sym];
       const p = b.querySelector('.sym-price');
       const c = b.querySelector('.sym-chg');
-      if (!t) return;
+      if (!t || !p || !c) return;
       p.textContent = fmt(sym, t.mid);
       if (t.dayPct != null && t.state !== 'closed') {
         c.textContent = sgn(t.dayPct, 2) + '%';
         c.className = 'sym-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
-      } else {
-        c.textContent = ' ';
-        c.className = 'sym-chg muted';
-      }
+      } else { c.textContent = ' '; c.className = 'sym-chg muted'; }
     });
-  }
-
-  function onTick(tick) {
-    if (!tick || !tick.symbol) return;
-    state.tickBuffer.set(tick.symbol, tick);
-    flushTicks();
   }
 
   function initChart() {
@@ -762,35 +659,32 @@
       }
     });
 
-    const zoomIn = $('zoomIn');
-    const zoomOut = $('zoomOut');
-    const zoomReset = $('zoomReset');
-    const chartFullscreen = $('chartFullscreen');
-    if (zoomIn) zoomIn.addEventListener('click', function () { chart.zoom(0.8); });
-    if (zoomOut) zoomOut.addEventListener('click', function () { chart.zoom(1.25); });
-    if (zoomReset) zoomReset.addEventListener('click', function () { chart.reset(); });
-
-    if (chartFullscreen) {
-      chartFullscreen.addEventListener('click', function () {
-        const chartCard = $('chartCard');
-        if (!document.fullscreenElement) {
-          if (chartCard && chartCard.requestFullscreen) {
-            chartCard.requestFullscreen().catch(function (err) { console.log('Fullscreen:', err.message); });
-          }
-        } else {
-          document.exitFullscreen();
+    ['zoomIn', 'zoomOut', 'zoomReset', 'chartFullscreen'].forEach(function (id) {
+      const btn = $(id);
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        if (id === 'zoomIn') chart.zoom(0.8);
+        else if (id === 'zoomOut') chart.zoom(1.25);
+        else if (id === 'zoomReset') chart.reset();
+        else {
+          const card = $('chartCard');
+          if (!document.fullscreenElement) {
+            if (card.requestFullscreen) card.requestFullscreen().catch(function () { void 0; });
+          } else document.exitFullscreen();
         }
       });
-    }
+    });
 
+    fsAbort = new AbortController();
+    const fsOpts = { signal: fsAbort.signal };
     document.addEventListener('fullscreenchange', function () {
       updateDrawVisibility();
       if (chart) chart.resize();
-    });
+    }, fsOpts);
     document.addEventListener('webkitfullscreenchange', function () {
       updateDrawVisibility();
       if (chart) chart.resize();
-    });
+    }, fsOpts);
 
     initDrawingMenu();
     initDrawingShortcuts();
@@ -801,10 +695,9 @@
         const b = e.target.closest('button[data-tf]');
         if (!b) return;
         state.tf = b.dataset.tf;
-        resetVerdict();
         renderMtf();
         renderChart();
-        scheduleAnalysis(true);
+        masterCycle();
       });
     }
   }
@@ -819,7 +712,7 @@
     if (!toggle) return;
     const fs = isFullscreen();
     const enabled = CFG.drawing && CFG.drawing.enabled !== false;
-    if (fs && enabled) { toggle.hidden = false; }
+    if (fs && enabled) toggle.hidden = false;
     else { toggle.hidden = true; closeDrawingMenu(); setTool('cursor'); }
   }
 
@@ -842,47 +735,40 @@
   }
 
   function toggleDrawingMenu() {
-    if (state.drawMenuOpen) closeDrawingMenu();
-    else openDrawingMenu();
+    if (state.drawMenuOpen) closeDrawingMenu(); else openDrawingMenu();
   }
 
   function setTool(tool) {
-    state.currentTool = tool;
     const menu = $('drawingMenu');
     if (menu) {
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (btn) {
-        const isActive = btn.dataset.tool === tool;
-        if (isActive) btn.classList.add('active'); else btn.classList.remove('active');
-        btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
+        const on = btn.dataset.tool === tool;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-checked', on ? 'true' : 'false');
       });
     }
     const toggle = $('drawToggle');
     if (toggle) {
-      if (tool === 'cursor') toggle.classList.remove('active');
-      else toggle.classList.add('active');
+      if (tool === 'cursor') toggle.classList.remove('active'); else toggle.classList.add('active');
     }
     if (chart && typeof chart.setTool === 'function') chart.setTool(tool);
   }
 
-  function handleUndo() { if (chart && typeof chart.undo === 'function') chart.undo(); }
-  function handleClear() { if (chart && typeof chart.clearDrawings === 'function') chart.clearDrawings(); }
+  function handleUndo() { if (chart && chart.undo) chart.undo(); }
+  function handleClear() { if (chart && chart.clearDrawings) chart.clearDrawings(); }
 
   function initDrawingMenu() {
     const toggle = $('drawToggle');
     const menu = $('drawingMenu');
     if (!toggle || !menu) return;
 
-    toggle.addEventListener('click', function (e) {
-      e.stopPropagation();
-      toggleDrawingMenu();
-    });
+    toggle.addEventListener('click', function (e) { e.stopPropagation(); toggleDrawingMenu(); });
 
     menu.addEventListener('click', function (e) {
       const toolBtn = e.target.closest('[data-tool]');
       if (toolBtn) {
-        const tool = toolBtn.dataset.tool;
-        setTool(tool);
-        if (tool !== 'cursor') closeDrawingMenu();
+        setTool(toolBtn.dataset.tool);
+        if (toolBtn.dataset.tool !== 'cursor') closeDrawingMenu();
         return;
       }
       if (e.target.closest('#drawUndo')) { handleUndo(); return; }
@@ -891,8 +777,7 @@
 
     document.addEventListener('click', function (e) {
       if (!state.drawMenuOpen) return;
-      if (menu.contains(e.target)) return;
-      if (toggle.contains(e.target)) return;
+      if (menu.contains(e.target) || toggle.contains(e.target)) return;
       closeDrawingMenu();
     });
   }
@@ -905,15 +790,14 @@
 
       if (e.key === 'Escape') {
         if (state.drawMenuOpen) { closeDrawingMenu(); e.preventDefault(); return; }
-        if (state.currentTool !== 'cursor') { setTool('cursor'); e.preventDefault(); }
+        if (currentTool() !== 'cursor') { setTool('cursor'); e.preventDefault(); }
         return;
       }
-      if (e.key === 'd' || e.key === 'D') {
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); toggleDrawingMenu(); }
-        return;
+      if ((e.key === 'd' || e.key === 'D') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault(); toggleDrawingMenu(); return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
-        e.preventDefault(); handleUndo(); return;
+        e.preventDefault(); handleUndo();
       }
     });
   }
@@ -921,21 +805,19 @@
   function initMtfToggle() {
     const toggle = $('mtfToggle');
     const mtfCard = $('mtfCard');
-    const conclusionCard = $('conclusionCard');
-    if (!toggle || !mtfCard || !conclusionCard) return;
-
+    const conc = $('conclusionCard');
+    if (!toggle || !mtfCard || !conc) return;
     toggle.addEventListener('click', function () {
-      const isExpanded = mtfCard.classList.toggle('expanded');
-      conclusionCard.classList.toggle('shrunk', isExpanded);
-      toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
-      toggle.setAttribute('aria-label', isExpanded ? 'Ocultar temporalidades adicionales' : 'Mostrar temporalidades adicionales');
+      const exp = mtfCard.classList.toggle('expanded');
+      conc.classList.toggle('shrunk', exp);
+      toggle.setAttribute('aria-expanded', exp ? 'true' : 'false');
     });
   }
 
   function startFeed() {
     feed = D.createFeed(Object.keys(CFG.symbols), {
       tick: onTick,
-      status: function (mode) { state.feedMode = mode; renderStatus(); },
+      status: function (mode) { state.feedMode = mode; scheduleRender(); },
       loadClient: function () {
         return new Promise(function (resolve) {
           if (window.signalR) { resolve(true); return; }
@@ -952,29 +834,21 @@
 
   function auditSignals() {
     const log = state.signalLog.slice();
-    let wins = 0;
-    let losses = 0;
-    let open = 0;
-    let invalid = 0;
-    let sumRWin = 0;
-    let sumRLoss = 0;
+    let wins = 0, losses = 0, open = 0, invalid = 0, sumRWin = 0, sumRLoss = 0;
 
     log.forEach(function (s) {
       if (s.entryPrice == null || s.stopPrice == null || s.targetPrice == null) { invalid++; return; }
       const bars = state.bars[s.tf];
       if (!bars || !bars.length) { invalid++; return; }
-
       const after = bars.filter(function (b) { return b.t > s.ts; });
       if (!after.length) { open++; return; }
 
       const risk = Math.abs(s.entryPrice - s.stopPrice);
       if (!(risk > 0)) { invalid++; return; }
-
       const reward = Math.abs(s.targetPrice - s.entryPrice);
       const rrReal = reward / risk;
 
-      let hitT = false;
-      let hitS = false;
+      let hitT = false, hitS = false;
       for (let i = 0; i < after.length; i++) {
         const b = after[i];
         if (s.direction === 1) {
@@ -988,67 +862,77 @@
 
       if (hitT) { wins++; sumRWin += rrReal; }
       else if (hitS) { losses++; sumRLoss += 1; }
-      else { open++; }
+      else open++;
     });
 
     const closed = wins + losses;
     const winRate = closed > 0 ? (wins / closed) * 100 : 0;
     const avgWinR = wins > 0 ? sumRWin / wins : 0;
     const avgLossR = losses > 0 ? sumRLoss / losses : 0;
-    const expectancyR = closed > 0
-      ? (wins / closed) * avgWinR - (losses / closed) * avgLossR
-      : 0;
+    const expectancyR = closed > 0 ? (wins / closed) * avgWinR - (losses / closed) * avgLossR : 0;
     const profitFactor = sumRLoss > 0 ? (sumRWin / sumRLoss) : (sumRWin > 0 ? Infinity : 0);
 
-    return {
-      total: log.length,
-      closed: closed,
-      wins: wins,
-      losses: losses,
-      open: open,
-      invalid: invalid,
-      winRate: winRate,
-      avgWinR: avgWinR,
-      avgLossR: avgLossR,
-      expectancyR: expectancyR,
-      profitFactor: profitFactor
-    };
+    return { total: log.length, closed, wins, losses, open, invalid, winRate, avgWinR, avgLossR, expectancyR, profitFactor };
   }
 
   function init() {
     buildSymbolBar();
     initMtfToggle();
-    initChart();
-    startFeed();
+
+    try { initChart(); }
+    catch (e) { console.error('[app] initChart falló:', e); }
+
+    try { startFeed(); }
+    catch (e) {
+      console.error('[app] startFeed falló:', e);
+      state.feedMode = 'error';
+      renderStatus();
+    }
+
+    startMasterLoop();
 
     loadAllBars().then(function (results) {
       if (!results) return;
       D.fetchLatest(Object.keys(CFG.symbols)).then(function (ticks) {
         ticks.forEach(function (t) { state.ticks[t.symbol] = t; });
         updateSymbolBarPrices();
-        renderAll();
-      }).catch(function () { void 0; });
+        renderAll(true);
+      }).catch(function (e) {
+        console.error('[app] fetchLatest falló:', e);
+        renderAll(true);
+      });
+    }).catch(function (e) {
+      console.error('[app] loadAllBars rechazó en init:', e);
+      renderAll(true);
     });
   }
 
   function cleanup() {
-    if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = 0; }
-    if (chart) { if (typeof chart.destroy === 'function') chart.destroy(); chart = null; }
+    stopMasterLoop();
+    if (fsAbort) { fsAbort.abort(); fsAbort = null; }
+    if (chart) { if (chart.destroy) chart.destroy(); chart = null; }
     if (feed) { feed.stop(); feed = null; }
   }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  } else init();
 
   window.addEventListener('beforeunload', cleanup);
 
   AT.app = {
     getSignalLog: function () { return state.signalLog.slice(); },
     getState: function () { return state; },
-    getVerdict: function () { return state.verdict.committed; },
-    auditSignals: auditSignals
+    auditSignals,
+    getLoopStats: function () {
+      return {
+        updateIntervalMs: UPDATE_INTERVAL_MS,
+        priceCheckMs: PRICE_CHECK_MS,
+        skips: state.cycleSkipCount,
+        errors: state.cycleErrorCount,
+        lastAnalysisAt: state.lastAnalysisAt,
+        lastPriceCheckAt: state.lastPriceCheckAt
+      };
+    }
   };
 })();

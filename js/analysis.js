@@ -21,16 +21,17 @@
     asian: 'Sesión asiática'
   };
 
+  const _cache = new Map();
+
   function num(v) { return v != null && Number.isFinite(v); }
   function cfg() { return (typeof window !== 'undefined' && window.AT_CONFIG) || {}; }
 
   function weightFor(tf) {
-    const w = (cfg().timeframes && cfg().timeframes.weights) || {};
-    return w[tf] || 1;
+    return ((cfg().timeframes && cfg().timeframes.weights) || {})[tf] || 1;
   }
 
   function biasTfs() {
-    return (cfg().timeframes && cfg().timeframes.bias) || ['1h'];
+    return (cfg().timeframes && cfg().timeframes.bias) || ['4h', '1d'];
   }
 
   function normalizeAdx(adx) {
@@ -41,12 +42,12 @@
 
   function cleanBars(bars) {
     if (!bars || !bars.length) return bars;
-    const useClosed = (cfg().analysis && cfg().analysis.useClosedCandlesOnly) === true;
-    const sliced = useClosed && bars.length > 1 ? bars.slice(0, -1) : bars.slice();
-    for (let i = 1; i < sliced.length; i++) {
-      if (sliced[i].t <= sliced[i - 1].t) return sliced.slice(0, i);
-    }
-    return sliced;
+    const useClosed = (cfg().analysis && cfg().analysis.useClosedCandlesOnly) !== false;
+    return (useClosed && bars.length > 1) ? bars.slice(0, -1) : bars;
+  }
+
+  function barVersion(bar) {
+    return bar ? (bar.t + '|' + bar.c) : 'none';
   }
 
   function getTradingHours(family) {
@@ -57,18 +58,14 @@
 
   function getMarketState(symbol, now) {
     const inst = (cfg().symbols || {})[symbol];
-    if (!inst) return { open: false, family: 'unknown', alwaysOpen: false, currentMin: 0, openMin: 0, closeMin: 0 };
+    if (!inst) return { open: false, family: 'unknown', alwaysOpen: false };
     const family = inst.family || 'forex';
     const th = getTradingHours(family);
-    if (th.alwaysOpen) return { open: true, family: family, alwaysOpen: true, currentMin: 0, openMin: 0, closeMin: 0 };
-    const dow = now.getUTCDay();
-    const hour = now.getUTCHours();
-    const minute = now.getUTCMinutes();
-    const currentMin = dow * 24 * 60 + hour * 60 + minute;
-    const openMin = (th.open.day * 24 * 60) + (th.open.hour * 60);
-    const closeMin = (th.close.day * 24 * 60) + (th.close.hour * 60);
-    const open = currentMin >= openMin && currentMin < closeMin;
-    return { open: open, family: family, alwaysOpen: false, currentMin: currentMin, openMin: openMin, closeMin: closeMin };
+    if (th.alwaysOpen) return { open: true, family: family, alwaysOpen: true };
+    const currentMin = now.getUTCDay() * 1440 + now.getUTCHours() * 60 + now.getUTCMinutes();
+    const openMin = th.open.day * 1440 + th.open.hour * 60;
+    const closeMin = th.close.day * 1440 + th.close.hour * 60;
+    return { open: currentMin >= openMin && currentMin < closeMin, family: family, alwaysOpen: false };
   }
 
   function getLiquidityState(now) {
@@ -80,25 +77,21 @@
     return {
       overlap: hour >= combined.startGmt && hour < combined.endGmt,
       london: hour >= london.startGmt && hour < london.endGmt,
-      newYork: hour >= ny.startGmt && hour < ny.endGmt,
-      hour: hour
+      newYork: hour >= ny.startGmt && hour < ny.endGmt
     };
   }
 
   function getSessionLabel(marketState, liquidityState) {
     if (!marketState.open) return SESSION_LABELS.closed;
-    if (marketState.alwaysOpen) {
-      if (liquidityState.overlap) return SESSION_LABELS.highLiquidity;
-      return SESSION_LABELS.alwaysOpen;
-    }
     if (liquidityState.overlap) return SESSION_LABELS.highLiquidity;
+    if (marketState.alwaysOpen) return SESSION_LABELS.alwaysOpen;
     if (liquidityState.london) return SESSION_LABELS.european;
     if (liquidityState.newYork) return SESSION_LABELS.american;
     return SESSION_LABELS.asian;
   }
 
   function analyzeTimeframe(bars) {
-    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 30;
+    const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 50;
     if (!bars || bars.length < minBars) return null;
 
     const closes = bars.map(function (b) { return b.c; });
@@ -106,12 +99,14 @@
     const lows = bars.map(function (b) { return b.l; });
 
     const rCfg = cfg().regime || {};
-    const emaFastP = rCfg.emaFast || 9;
-    const emaSlowP = rCfg.emaSlow || 21;
+    const emaFastP = rCfg.emaFast || 50;
+    const emaSlowP = rCfg.emaSlow || 200;
     const adxPeriod = rCfg.adxPeriod || 14;
-    const returnLb = rCfg.returnLookback || 10;
-    const emaSepMin = rCfg.emaSeparationMinPct || 0.10;
-    const returnMin = rCfg.returnMinPct || 0.15;
+    const returnLb = rCfg.returnLookback || 30;
+    const emaSepMin = rCfg.emaSeparationMinPct || 0.5;
+    const returnMin = rCfg.returnMinPct || 0.2;
+    const adxMin = rCfg.adxMin || 22;
+    const adxStrong = rCfg.adxStrong || 28;
 
     const fast = I.ema(closes, emaFastP);
     const slow = I.ema(closes, emaSlowP);
@@ -121,20 +116,19 @@
     const price = closes[i];
     const f = fast[i];
     const s = slow[i];
-    const adxVal = adxData.adx[i] || 0;
+    const adxVal = adxData.adx[i];
 
-    if (!num(f) || !num(s) || s === 0) return null;
+    if (!num(f) || !num(s) || !num(adxVal) || s === 0) return null;
 
     const direction = f > s ? 1 : -1;
     const emaSepPct = Math.abs((f - s) / s) * 100;
 
     const retIdx = i - returnLb;
-    let returnPct = null;
-    if (retIdx >= 0 && closes[retIdx] > 0) {
-      returnPct = ((price - closes[retIdx]) / closes[retIdx]) * 100;
-    }
+    const returnPct = (retIdx >= 0 && closes[retIdx] > 0)
+      ? ((price - closes[retIdx]) / closes[retIdx]) * 100
+      : null;
 
-    const adxOk = adxVal >= (rCfg.adxMin || 20);
+    const adxOk = adxVal >= adxMin;
     const emaOk = emaSepPct >= emaSepMin;
     const returnOk = num(returnPct) && Math.abs(returnPct) >= returnMin && ((returnPct > 0) === (direction === 1));
     const regimeValid = adxOk && emaOk && returnOk;
@@ -142,7 +136,7 @@
     return {
       direction: direction,
       adx: adxVal,
-      adxStrong: adxVal >= (rCfg.adxStrong || 25),
+      adxStrong: adxVal >= adxStrong,
       emaSepPct: emaSepPct,
       returnPct: returnPct,
       regimeValid: regimeValid,
@@ -155,14 +149,38 @@
     };
   }
 
+  function getAnalyzedTf(rawBars, tf) {
+    if (!rawBars || !rawBars.length) return null;
+    const cleaned = cleanBars(rawBars);
+    if (!cleaned || !cleaned.length) return null;
+
+    const last = cleaned[cleaned.length - 1];
+    const version = barVersion(last);
+    const cached = _cache.get(tf);
+
+    if (cached && cached.result != null && cached.version === version) {
+      return cached.result;
+    }
+
+    const result = analyzeTimeframe(cleaned);
+    if (result != null) {
+      _cache.set(tf, { version: version, result: result });
+    } else {
+      _cache.delete(tf);
+    }
+    return result;
+  }
+
   function findNearestLevels(bars, currentPrice, lookback) {
     lookback = lookback || 3;
-    if (!bars || bars.length < lookback * 2 + 2) return { support: null, resistance: null };
-    if (!num(currentPrice)) return { support: null, resistance: null };
+    const n = bars ? bars.length : 0;
+    const empty = { support: null, resistance: null };
+    if (!n || n < lookback * 2 + 2 || !num(currentPrice)) return empty;
+
     const supports = [];
     const resistances = [];
 
-    for (let i = lookback; i < bars.length - lookback; i++) {
+    for (let i = lookback; i < n - lookback; i++) {
       const b = bars[i];
       let isHigh = true;
       let isLow = true;
@@ -170,14 +188,8 @@
         if (bars[i - j].h >= b.h || bars[i + j].h >= b.h) isHigh = false;
         if (bars[i - j].l <= b.l || bars[i + j].l <= b.l) isLow = false;
       }
-      if (isHigh) {
-        if (b.h < currentPrice) supports.push(b.h);
-        else resistances.push(b.h);
-      }
-      if (isLow) {
-        if (b.l < currentPrice) supports.push(b.l);
-        else resistances.push(b.l);
-      }
+      if (isHigh) (b.h < currentPrice ? supports : resistances).push(b.h);
+      if (isLow) (b.l < currentPrice ? supports : resistances).push(b.l);
     }
 
     return {
@@ -186,76 +198,32 @@
     };
   }
 
-  function suggestRisk(entry, support, resistance, atr, direction) {
-    const riskCfg = cfg().risk || {};
-    const stopMult = riskCfg.atrStopMult || 1.2;
-    const targetMult = riskCfg.atrTargetMult || 2.0;
-    const minRR = riskCfg.minRR != null ? riskCfg.minRR : 1.5;
-    if (!num(entry) || !num(atr) || atr <= 0) return null;
-
-    let stop, target, risk, reward;
-    if (direction === 1) {
-      const atrStop = entry - stopMult * atr;
-      stop = (num(support) && support < entry) ? Math.min(support, atrStop) : atrStop;
-      if (!(stop < entry)) return null;
-      const atrTarget = entry + targetMult * atr;
-      target = (num(resistance) && resistance > entry) ? Math.min(resistance, atrTarget) : atrTarget;
-      if (!(target > entry)) return null;
-      risk = entry - stop;
-      reward = target - entry;
-    } else if (direction === -1) {
-      const atrStop = entry + stopMult * atr;
-      stop = (num(resistance) && resistance > entry) ? Math.max(resistance, atrStop) : atrStop;
-      if (!(stop > entry)) return null;
-      const atrTarget = entry - targetMult * atr;
-      target = (num(support) && support < entry) ? Math.max(support, atrTarget) : atrTarget;
-      if (!(target < entry)) return null;
-      risk = stop - entry;
-      reward = entry - target;
-    } else {
-      return null;
+  function findExtremeIdx(arr, start, end, findMin) {
+    let idx = -1;
+    let val = findMin ? Infinity : -Infinity;
+    for (let j = start; j <= end; j++) {
+      if (findMin ? arr[j] < val : arr[j] > val) { val = arr[j]; idx = j; }
     }
-
-    if (risk <= 0 || reward <= 0) return null;
-    const rr = reward / risk;
-    return { stop: stop, target: target, rr: rr, risk: risk, reward: reward, valid: rr >= minRR };
-  }
-
-  function positionSize(entry, stop, symbol) {
-    const riskCfg = cfg().risk || {};
-    const inst = (cfg().symbols || {})[symbol] || {};
-    const balance = riskCfg.accountBalance || 10000;
-    const riskPct = riskCfg.maxRiskPct || 0.5;
-    const contract = inst.contract || 100;
-    if (!num(entry) || !num(stop) || !(balance > 0)) return null;
-
-    const stopDist = Math.abs(entry - stop);
-    if (!(stopDist > 0)) return null;
-
-    const riskAmount = balance * (riskPct / 100);
-    const lotSize = riskAmount / (stopDist * contract);
-    return {
-      lots: lotSize,
-      riskAmount: riskAmount,
-      stopDistance: stopDist,
-      balance: balance,
-      riskPct: riskPct
-    };
+    return { idx: idx, val: val };
   }
 
   function detectExhaustion(bars, direction, exCfg) {
     const alerts = [];
-    if (!bars || bars.length < 20) return alerts;
+    if (!bars || bars.length < 40) return alerts;
 
     const closes = bars.map(function (b) { return b.c; });
+    const highs = bars.map(function (b) { return b.h; });
+    const lows = bars.map(function (b) { return b.l; });
+    const vols = bars.map(function (b) { return b.v || 0; });
+
     const i = bars.length - 1;
-    const rsiPeriod = exCfg.rsiPeriod || 14;
-    const rsiArr = I.rsi(closes, rsiPeriod);
+    const rsiArr = I.rsi(closes, exCfg.rsiPeriod || 14);
+    const adxArr = I.adx(highs, lows, closes, 14).adx;
+
     const lastRsi = rsiArr[i];
     const prevRsi = rsiArr[i - 1];
-    const ob = exCfg.rsiOverbought || 75;
-    const os = exCfg.rsiOversold || 25;
-
+    const ob = exCfg.rsiOverbought || 80;
+    const os = exCfg.rsiOversold || 20;
     if (num(lastRsi) && num(prevRsi)) {
       if (lastRsi > ob && prevRsi <= ob) {
         alerts.push({ type: 'info', text: 'RSI cruza sobrecompra (' + lastRsi.toFixed(1) + ').' });
@@ -263,86 +231,90 @@
         alerts.push({ type: 'info', text: 'RSI cruza sobreventa (' + lastRsi.toFixed(1) + ').' });
       }
     }
+
+    const lookback = exCfg.lookbackCandles || 5;
+    if (i >= lookback && num(adxArr[i]) && num(adxArr[i - lookback]) && adxArr[i - lookback] > 0) {
+      const dropPct = ((adxArr[i - lookback] - adxArr[i]) / adxArr[i - lookback]) * 100;
+      if (dropPct > (exCfg.adxDropPct || 30)) {
+        alerts.push({ type: 'info', text: 'ADX cae ' + dropPct.toFixed(0) + '% en ' + lookback + ' velas.' });
+      }
+    }
+
+    const divLb = exCfg.divergenceLookback || 15;
+    const gap = exCfg.divergenceGap != null ? exCfg.divergenceGap : 1;
+    if (i >= 2 * divLb + gap - 1) {
+      const currStart = i - divLb + 1;
+      const prevEnd = currStart - gap - 1;
+      const prevStart = prevEnd - divLb + 1;
+
+      const currLow = findExtremeIdx(lows, currStart, i, true);
+      const prevLow = findExtremeIdx(lows, prevStart, prevEnd, true);
+      if (currLow.idx !== -1 && prevLow.idx !== -1 &&
+          currLow.val < prevLow.val &&
+          num(rsiArr[currLow.idx]) && num(rsiArr[prevLow.idx]) &&
+          rsiArr[currLow.idx] > rsiArr[prevLow.idx]) {
+        alerts.push({ type: 'danger', text: 'Divergencia alcista RSI.' });
+      }
+
+      const currHigh = findExtremeIdx(highs, currStart, i, false);
+      const prevHigh = findExtremeIdx(highs, prevStart, prevEnd, false);
+      if (currHigh.idx !== -1 && prevHigh.idx !== -1 &&
+          currHigh.val > prevHigh.val &&
+          num(rsiArr[currHigh.idx]) && num(rsiArr[prevHigh.idx]) &&
+          rsiArr[currHigh.idx] < rsiArr[prevHigh.idx]) {
+        alerts.push({ type: 'danger', text: 'Divergencia bajista RSI.' });
+      }
+    }
+
+    const volLb = exCfg.volumeLookback || 20;
+    if (i > volLb) {
+      let avgVol = 0;
+      for (let j = i - 1; j >= i - volLb; j--) avgVol += vols[j];
+      avgVol /= volLb;
+      const lastVol = vols[i];
+      const isBearish = closes[i] < bars[i].o;
+      const isBullish = closes[i] > bars[i].o;
+      const threshold = avgVol * (1 - (exCfg.volumeDropPct || 40) / 100);
+      if (direction === -1 && isBearish && lastVol < threshold) {
+        alerts.push({ type: 'warn', text: 'Volumen bajo en vela bajista.' });
+      } else if (direction === 1 && isBullish && lastVol < threshold) {
+        alerts.push({ type: 'warn', text: 'Volumen bajo en vela alcista.' });
+      }
+    }
+
     return alerts;
   }
 
-  function volumeConfirms(bars) {
-    if (!bars || bars.length < 21) return true;
-    const vols = bars.map(function (b) { return b.v || 0; });
-    const last20 = vols.slice(-21, -1);
-    const avg = last20.reduce(function (a, b) { return a + b; }, 0) / 20;
-    if (!(avg > 0)) return true;
-    const last = vols[vols.length - 1];
-    return last >= avg * 0.8;
-  }
+  function suggestRisk(entry, support, resistance, atr, direction) {
+    const riskCfg = cfg().risk || {};
+    const stopMult = riskCfg.atrStopMult || 1.5;
+    const targetMult = riskCfg.atrTargetMult || 3.0;
+    const minRR = riskCfg.minRR || 1.8;
+    if (!num(entry) || !num(atr) || atr <= 0) return null;
 
-  function vwapBias(bars) {
-    const vCfg = cfg().vwap || {};
-    if (vCfg.enabled !== true) return { ok: true, vwap: null, bias: 0 };
-    if (!bars || bars.length < 5) return { ok: true, vwap: null, bias: 0 };
-
-    const arr = I.vwap(bars, vCfg.resetHourUtc != null ? vCfg.resetHourUtc : 0);
-    let vwapVal = null;
-    for (let i = arr.length - 1; i >= 0; i--) {
-      if (num(arr[i])) { vwapVal = arr[i]; break; }
+    let stop, target;
+    if (direction === 1) {
+      const atrStop = entry - stopMult * atr;
+      stop = num(support) ? Math.min(support, atrStop) : atrStop;
+      const atrTarget = entry + targetMult * atr;
+      target = num(resistance) ? Math.min(resistance, atrTarget) : atrTarget;
+      if (target <= entry) return null;
+    } else if (direction === -1) {
+      const atrStop = entry + stopMult * atr;
+      stop = num(resistance) ? Math.max(resistance, atrStop) : atrStop;
+      const atrTarget = entry - targetMult * atr;
+      target = num(support) ? Math.max(support, atrTarget) : atrTarget;
+      if (target >= entry) return null;
+    } else {
+      return null;
     }
-    if (!num(vwapVal) || vwapVal <= 0) return { ok: true, vwap: null, bias: 0 };
 
-    const price = bars[bars.length - 1].c;
-    const biasPct = vCfg.biasFilterPct != null ? vCfg.biasFilterPct : 0.10;
-    const threshold = vwapVal * (biasPct / 100);
-    const diff = price - vwapVal;
-    const bias = Math.abs(diff) < threshold ? 0 : (diff > 0 ? 1 : -1);
+    const risk = direction === 1 ? entry - stop : stop - entry;
+    const reward = direction === 1 ? target - entry : entry - target;
+    if (risk <= 0 || reward <= 0) return null;
 
-    return {
-      ok: true,
-      vwap: vwapVal,
-      bias: bias,
-      distancePct: (diff / vwapVal) * 100,
-      useAsFilter: vCfg.useAsBiasFilter === true
-    };
-  }
-
-  function applyVwapFilter(direction, vwapInfo) {
-    if (direction === 0) return { direction: 0, ok: true };
-    if (!vwapInfo || !vwapInfo.useAsFilter) return { direction: direction, ok: true };
-    if (vwapInfo.bias === 0) return { direction: direction, ok: true };
-    if (direction === vwapInfo.bias) return { direction: direction, ok: true };
-    return { direction: 0, ok: false };
-  }
-
-  function applyHigherTfFilter(direction, perTf) {
-    if (direction === 0) return { direction: 0, ok: true };
-    const biasList = biasTfs();
-    const highTf = biasList[biasList.length - 1];
-    const midTf = biasList.length > 1 ? biasList[0] : null;
-    const highData = perTf[highTf];
-    if (!highData || !highData.regimeValid) return { direction: direction, ok: true };
-    const midData = midTf ? perTf[midTf] : null;
-
-    if (direction === 1 && highData.direction === -1) {
-      if (!midData || !midData.regimeValid || midData.direction !== 1) return { direction: 0, ok: false };
-    }
-    if (direction === -1 && highData.direction === 1) {
-      if (!midData || !midData.regimeValid || midData.direction !== -1) return { direction: 0, ok: false };
-    }
-    return { direction: direction, ok: true };
-  }
-
-  function applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold) {
-    if (previousDirection === 1) {
-      if (buyShare >= exitThreshold) return 1;
-      if (buyShare <= 1 - enterThreshold) return -1;
-      return 1;
-    }
-    if (previousDirection === -1) {
-      if (buyShare <= 1 - exitThreshold) return -1;
-      if (buyShare >= enterThreshold) return 1;
-      return -1;
-    }
-    if (buyShare >= enterThreshold) return 1;
-    if (buyShare <= 1 - enterThreshold) return -1;
-    return 0;
+    const rr = reward / risk;
+    return { stop: stop, target: target, rr: rr, valid: rr >= minRR };
   }
 
   function emptyResult(reason, sessionLabel, marketOpen, symbolFamily) {
@@ -352,135 +324,216 @@
       consensusText: LABELS.neutral,
       confidence: 0,
       overallDirection: 0,
-      rawDirection: 0,
-      previousDirection: 0,
       perTf: {},
       macroTrend: '—',
       macroMomentum: '—',
       macroVolatility: '—',
       avgAdxAligned: 0,
+      avgAdxOpposed: 0,
       alerts: [],
       verdictState: 'wait',
       verdictLabel: 'ESPERAR',
-      verdictReason: reason || 'Analizando mercado...',
+      verdictReason: reason || 'Datos insuficientes.',
       verdictRisk: null,
-      positionSizing: null,
-      vwap: null,
-      marketOpen: marketOpen || false,
+      marketOpen: !!marketOpen,
       highLiquidity: false,
       sessionLabel: sessionLabel || SESSION_LABELS.closed,
       symbolFamily: symbolFamily || 'unknown',
       entryTf: null,
-      volumeOk: true,
-      higherTfOk: true,
-      vwapOk: true,
-      conclusion: reason || 'Analizando mercado...'
+      conclusion: reason || 'Datos insuficientes.',
+      computedAt: Date.now()
+    };
+  }
+
+  function computeConsensus(valid, thresholds, weightedMajority) {
+    let buyWeight = 0;
+    let sellWeight = 0;
+    for (let i = 0; i < valid.length; i++) {
+      if (valid[i].data.direction === 1) buyWeight += valid[i].data.evidence;
+      else sellWeight += valid[i].data.evidence;
+    }
+    const totalWeight = buyWeight + sellWeight;
+    const buyShare = totalWeight > 0 ? buyWeight / totalWeight : 0.5;
+
+    let overallDirection = 0;
+    if (buyShare >= weightedMajority) overallDirection = 1;
+    else if (buyShare <= 1 - weightedMajority) overallDirection = -1;
+
+    let sumAllEvidence = 0;
+    let sumAgreeEvidence = 0;
+    let sumAgreeAdx = 0;
+    let sumOpposedAdx = 0;
+    let agreeCount = 0;
+    let opposedCount = 0;
+
+    for (let i = 0; i < valid.length; i++) {
+      const v = valid[i];
+      const agree = overallDirection !== 0 && v.data.direction === overallDirection;
+      v.agree = agree;
+      sumAllEvidence += v.data.evidence;
+      if (agree) {
+        sumAgreeEvidence += v.data.evidence;
+        sumAgreeAdx += v.data.adx;
+        agreeCount++;
+      } else {
+        sumOpposedAdx += v.data.adx;
+        opposedCount++;
+      }
+    }
+
+    const consensusScore = sumAllEvidence > 0 ? (sumAgreeEvidence / sumAllEvidence) * 100 : 0;
+    const avgAdxAligned = agreeCount > 0 ? sumAgreeAdx / agreeCount : 0;
+    const avgAdxOpposed = opposedCount > 0 ? sumOpposedAdx / opposedCount : 0;
+    const magnitude = avgAdxAligned > 0 ? normalizeAdx(avgAdxAligned) : 0;
+    const confidence = overallDirection !== 0 ? magnitude * (consensusScore / 100) * 100 : 0;
+
+    let consensusLabel;
+    if (overallDirection === 0) consensusLabel = 'neutral';
+    else if (consensusScore >= thresholds.strong) consensusLabel = overallDirection === 1 ? 'strong_buy' : 'strong_sell';
+    else if (consensusScore >= thresholds.moderate) consensusLabel = overallDirection === 1 ? 'buy' : 'sell';
+    else consensusLabel = 'neutral';
+
+    return {
+      overallDirection: overallDirection,
+      buyShare: buyShare,
+      consensusScore: consensusScore,
+      consensusLabel: consensusLabel,
+      avgAdxAligned: avgAdxAligned,
+      avgAdxOpposed: avgAdxOpposed,
+      confidence: confidence
+    };
+  }
+
+  function computeVerdict(ctx) {
+    if (!ctx.marketOpen) {
+      return { state: 'wait', label: 'ESPERAR', reason: 'Mercado cerrado (' + ctx.marketFamily + ').' };
+    }
+    if (ctx.overallDirection === 0) {
+      return {
+        state: 'wait', label: 'ESPERAR',
+        reason: 'Votación ponderada sin sesgo claro (' + (ctx.buyShare * 100).toFixed(0) + '% / ' + ((1 - ctx.buyShare) * 100).toFixed(0) + '%).'
+      };
+    }
+    if (!ctx.biasValid) {
+      return {
+        state: 'wait', label: 'ESPERAR',
+        reason: 'Sesgo ' + (ctx.overallDirection === 1 ? 'alcista' : 'bajista') + ' sin confirmación de 4h/1d.'
+      };
+    }
+    if (ctx.avgAdxAligned < ctx.adxMin) {
+      return { state: 'wait', label: 'ESPERAR', reason: 'Régimen débil (ADX ' + ctx.avgAdxAligned.toFixed(1) + ' < ' + ctx.adxMin + ').' };
+    }
+    if (ctx.consensusLabel === 'neutral') {
+      return { state: 'wait', label: 'ESPERAR', reason: 'Consenso insuficiente (' + ctx.consensusScore.toFixed(0) + '%).' };
+    }
+    if (ctx.dangerCount >= ctx.dangerBlock) {
+      return { state: 'wait', label: 'ESPERAR', reason: 'Agotamiento detectado (' + ctx.dangerCount + ' alertas críticas).' };
+    }
+    if (!ctx.risk) {
+      return { state: 'wait', label: 'ESPERAR', reason: 'No se pudo calcular gestión de riesgo.' };
+    }
+    if (!ctx.risk.valid) {
+      return { state: 'wait', label: 'ESPERAR', reason: 'R:R ' + ctx.risk.rr.toFixed(2) + ':1 por debajo del mínimo (' + ctx.minRR + ':1).' };
+    }
+
+    const isBuy = ctx.overallDirection === 1;
+    return {
+      state: isBuy ? 'buy' : 'sell',
+      label: isBuy ? 'PREPARAR COMPRA' : 'PREPARAR VENTA',
+      reason: 'Sesgo ' + (isBuy ? 'alcista' : 'bajista') +
+        ' confirmado. ADX ' + ctx.avgAdxAligned.toFixed(1) +
+        ' · R:R ' + ctx.risk.rr.toFixed(2) + ':1 · Stop ' + ctx.fmt(ctx.risk.stop) + ' · Target ' + ctx.fmt(ctx.risk.target) + '.'
     };
   }
 
   function analyze(barsByTf, opts) {
+    try {
+      return _analyze(barsByTf, opts);
+    } catch (e) {
+      console.error('[analysis] analyze() excepción:', e);
+      return emptyResult('Error interno de análisis: ' + (e && e.message ? e.message : 'desconocido'));
+    }
+  }
+
+  function _analyze(barsByTf, opts) {
     opts = opts || {};
     const c = cfg();
     const consensusCfg = c.consensus || {};
     const riskCfg = c.risk || {};
+    const regimeCfg = c.regime || {};
     const exCfg = c.exhaustion || {};
-    const thresholds = consensusCfg.thresholds || { strong: 60, moderate: 40 };
-    const minValidTfs = consensusCfg.minimumValidTfs || 2;
-    const enterThreshold = consensusCfg.enterThreshold != null ? consensusCfg.enterThreshold : 0.60;
-    const exitThreshold = consensusCfg.exitThreshold != null ? consensusCfg.exitThreshold : 0.45;
-    const atrPeriod = riskCfg.atrPeriod || 14;
+    const thresholds = consensusCfg.thresholds || { strong: 65, moderate: 45 };
+    const minValidTfs = consensusCfg.minimumValidTfs || 3;
+    const weightedMajority = consensusCfg.weightedMajority || 0.60;
+    const adxMin = regimeCfg.adxMin || 22;
+    const dangerBlock = exCfg.dangerBlockThreshold || 2;
+    const minRR = riskCfg.minRR || 1.8;
 
     const entryTf = opts.currentTf || (c.timeframes && c.timeframes.entry) || '15m';
     const symbol = opts.symbol || 'XAUUSD';
-    const previousDirection = opts.previousDirection === 1 || opts.previousDirection === -1
-      ? opts.previousDirection
-      : 0;
 
     const now = new Date();
     const marketState = getMarketState(symbol, now);
     const liquidityState = getLiquidityState(now);
     const sessionLabel = getSessionLabel(marketState, liquidityState);
 
-    const tfs = Object.keys(barsByTf || {});
     const perTf = {};
     const valid = [];
+    const keys = Object.keys(barsByTf || {});
 
-    tfs.forEach(function (tf) {
-      const bars = cleanBars(barsByTf[tf]);
-      const r = analyzeTimeframe(bars);
-      if (!r) return;
-      r.adxNorm = normalizeAdx(r.adx);
-      r.weight = weightFor(tf);
-      r.evidence = r.regimeValid ? r.weight * (r.adxNorm > 0 ? r.adxNorm : 0.5) : 0;
-      perTf[tf] = r;
-      if (r.regimeValid) valid.push({ tf: tf, data: r });
-    });
-
-    if (valid.length === 0) {
-      const reason = Object.keys(perTf).length > 0
-        ? 'Sin régimen válido en ningún timeframe. Mercado lateral.'
-        : 'Cargando datos de mercado o historial insuficiente...';
-      return emptyResult(reason, sessionLabel, marketState.open, marketState.family);
+    for (let k = 0; k < keys.length; k++) {
+      const tf = keys[k];
+      try {
+        const r = getAnalyzedTf(barsByTf[tf], tf);
+        if (!r) continue;
+        r.adxNorm = normalizeAdx(r.adx);
+        r.weight = weightFor(tf);
+        r.evidence = r.weight * r.adxNorm;
+        perTf[tf] = r;
+        valid.push({ tf: tf, data: r });
+      } catch (e) {
+        console.error('[analysis] ' + tf + ' excepción:', e);
+      }
     }
 
     if (valid.length < minValidTfs) {
-      return emptyResult('Timeframes válidos insuficientes (' + valid.length + '/' + minValidTfs + ').', sessionLabel, marketState.open, marketState.family);
+      return emptyResult(
+        'Datos insuficientes: se necesitan ≥' + minValidTfs + ' temporalidades válidas (hay ' + valid.length + ').',
+        sessionLabel, marketState.open, marketState.family
+      );
     }
 
-    let buyWeight = 0;
-    let sellWeight = 0;
-    valid.forEach(function (v) {
-      const w = v.data.evidence;
-      if (v.data.direction === 1) buyWeight += w;
-      else sellWeight += w;
+    const consensus = computeConsensus(valid, thresholds, weightedMajority);
+    const overallDirection = consensus.overallDirection;
+    const buyShare = consensus.buyShare;
+    const consensusScore = consensus.consensusScore;
+    const consensusLabel = consensus.consensusLabel;
+    const avgAdxAligned = consensus.avgAdxAligned;
+    const avgAdxOpposed = consensus.avgAdxOpposed;
+    const confidence = consensus.confidence;
+
+    const bias = biasTfs();
+    const biasAgree = valid.filter(function (v) {
+      return bias.indexOf(v.tf) !== -1 && v.data.regimeValid && v.data.direction === overallDirection;
     });
-    const totalWeight = buyWeight + sellWeight;
-    const buyShare = totalWeight > 0 ? buyWeight / totalWeight : 0.5;
-
-    const rawDirection = applyHysteresis(buyShare, 0, enterThreshold, exitThreshold);
-    let overallDirection = applyHysteresis(buyShare, previousDirection, enterThreshold, exitThreshold);
-
-    const htResult = applyHigherTfFilter(overallDirection, perTf);
-    overallDirection = htResult.direction;
-    const higherTfOk = htResult.ok;
-
-    let sumAllEvidence = 0;
-    let sumAgreeEvidence = 0;
-    let sumAgreeAdx = 0;
-    let agreeCount = 0;
-
-    valid.forEach(function (v) {
-      const agree = overallDirection !== 0 && v.data.direction === overallDirection;
-      v.agree = agree;
-      perTf[v.tf].agree = agree;
-      sumAllEvidence += v.data.evidence;
-      if (agree) {
-        sumAgreeEvidence += v.data.evidence;
-        sumAgreeAdx += v.data.adx;
-        agreeCount++;
-      }
+    const biasOppose = valid.filter(function (v) {
+      return bias.indexOf(v.tf) !== -1 && v.data.regimeValid && overallDirection !== 0 && v.data.direction !== overallDirection;
     });
+    const biasValid = overallDirection !== 0 && biasAgree.length >= 1 && biasOppose.length === 0;
 
-    const consensusScore = sumAllEvidence > 0 ? (sumAgreeEvidence / sumAllEvidence) * 100 : (overallDirection !== 0 ? 100 : 0);
-    const avgAdxAligned = agreeCount > 0 ? sumAgreeAdx / agreeCount : 0;
-    const magnitude = avgAdxAligned > 0 ? normalizeAdx(avgAdxAligned) : 0.5;
-    const confidence = overallDirection !== 0 ? magnitude * (consensusScore / 100) * 100 : 0;
-
-    let consensusLabel;
-    if (overallDirection === 0) consensusLabel = 'neutral';
-    else if (consensusScore >= thresholds.strong) consensusLabel = overallDirection === 1 ? 'strong_buy' : 'strong_sell';
-    else consensusLabel = overallDirection === 1 ? 'buy' : 'sell';
+    const macroTrend =
+      avgAdxAligned >= 30 ? 'Muy fuerte' :
+      avgAdxAligned >= 25 ? 'Fuerte' :
+      avgAdxAligned >= 20 ? 'Moderada' : 'Débil';
 
     const entryBarsRaw = barsByTf[entryTf] || null;
     const entryBars = entryBarsRaw ? cleanBars(entryBarsRaw) : null;
-    const entryData = perTf[entryTf] || null;
-
-    let macroMomentum = 'Neutro';
-    let macroVolatility = 'Normal';
+    let macroMomentum = '—';
+    let macroVolatility = '—';
     let alerts = [];
     let atrVal = 0;
 
-    if (entryBars && entryBars.length >= atrPeriod + 1) {
+    if (entryBars && entryBars.length > 30) {
       const hc = entryBars.map(function (b) { return b.c; });
       const hh = entryBars.map(function (b) { return b.h; });
       const hl = entryBars.map(function (b) { return b.l; });
@@ -488,67 +541,72 @@
       const rsiArr = I.rsi(hc, 14);
       const lastRsi = rsiArr[rsiArr.length - 1];
       if (num(lastRsi)) {
-        if (lastRsi >= 60) macroMomentum = 'Alcista';
-        else if (lastRsi <= 40) macroMomentum = 'Bajista';
+        macroMomentum = lastRsi >= 60 ? 'Alcista' : lastRsi <= 40 ? 'Bajista' : 'Neutro';
       }
 
-      const atrArr = I.atr(hh, hl, hc, atrPeriod);
+      const atrArr = I.atr(hh, hl, hc, riskCfg.atrPeriod || 14);
       const lastAtr = atrArr[atrArr.length - 1];
-      if (num(lastAtr)) atrVal = lastAtr;
+      const cleanAtr = atrArr.filter(num);
+      const avgAtrArr = I.sma(cleanAtr, 20);
+      const avgAtrVal = avgAtrArr[avgAtrArr.length - 1];
+
+      if (num(lastAtr) && num(avgAtrVal) && avgAtrVal > 0) {
+        atrVal = lastAtr;
+        const ratio = lastAtr / avgAtrVal;
+        macroVolatility = ratio >= 1.3 ? 'Alta' : ratio <= 0.75 ? 'Baja' : 'Normal';
+      }
 
       alerts = detectExhaustion(entryBars, overallDirection, exCfg);
+
+      const overext = exCfg.consensusOverextension || 95;
+      if (consensusScore >= overext && overallDirection === 1) {
+        alerts.push({ type: 'danger', text: 'Consenso unánime alcista. Riesgo de sobre-extensión.' });
+      } else if (consensusScore >= overext && overallDirection === -1) {
+        alerts.push({ type: 'danger', text: 'Consenso unánime bajista. Riesgo de sobre-extensión.' });
+      }
     }
 
-    const volumeOk = volumeConfirms(entryBars);
-    const vwapInfo = vwapBias(entryBars);
-    const vwapResult = applyVwapFilter(overallDirection, vwapInfo);
-    overallDirection = vwapResult.direction;
-    const vwapOk = vwapResult.ok;
+    if (marketState.open && !liquidityState.overlap && !marketState.alwaysOpen) {
+      alerts.push({ type: 'info', text: 'Liquidez reducida (fuera de overlap Londres-NY).' });
+    }
 
-    const currentPrice = entryData ? entryData.price : null;
-    const levels = entryData ? findNearestLevels(entryBars, currentPrice, 3) : { support: null, resistance: null };
-    const risk = (entryData && overallDirection !== 0)
+    const entryData = perTf[entryTf];
+    const currentPrice = entryData ? entryData.price : (valid[0] ? valid[0].data.price : null);
+    const levels = findNearestLevels(entryBars, currentPrice, 3);
+    const risk = overallDirection !== 0
       ? suggestRisk(currentPrice, levels.support, levels.resistance, atrVal, overallDirection)
       : null;
-    const sizing = (risk && risk.valid) ? positionSize(currentPrice, risk.stop, symbol) : null;
 
-    let verdictState = 'wait';
-    let verdictLabel = 'ESPERAR';
-    let verdictReason = 'Analizando condiciones...';
+    const digits = (c.symbols && c.symbols[symbol] && c.symbols[symbol].digits) || 2;
+    const fmt = function (p) { return num(p) ? p.toFixed(digits) : '—'; };
+    const dangerCount = alerts.filter(function (a) { return a.type === 'danger'; }).length;
 
-    if (!marketState.open) {
-      verdictReason = 'Mercado cerrado (' + marketState.family + ').';
-    } else if (!entryData) {
-      verdictReason = 'Timeframe de entrada (' + entryTf + ') sin régimen válido.';
-    } else if (overallDirection === 0 && previousDirection !== 0 && !higherTfOk) {
-      verdictReason = 'Señal contra tendencia de mayor timeframe. Esperando confirmación.';
-    } else if (overallDirection === 0 && previousDirection !== 0 && !vwapOk) {
-      verdictReason = 'Señal contra VWAP. Esperando alineación con sesgo institucional.';
-    } else if (overallDirection === 0) {
-      verdictReason = 'Mercado lateral. Se busca ruptura de estructura.';
-    } else if (!volumeOk) {
-      verdictReason = 'Vela de señal sin volumen suficiente. Esperando confirmación.';
-    } else if (!risk) {
-      verdictReason = 'Calculando niveles de entrada perfectos...';
-    } else if (!risk.valid) {
-      verdictReason = 'R:R ' + risk.rr.toFixed(2) + ':1 por debajo del mínimo ' + (riskCfg.minRR || 1.5) + ':1.';
-    } else {
-      verdictState = overallDirection === 1 ? 'buy' : 'sell';
-      verdictLabel = overallDirection === 1 ? 'COMPRA' : 'VENTA';
-      const sizeText = sizing ? ' | Lotes: ' + sizing.lots.toFixed(2) : '';
-      verdictReason = 'Entrada: ' + currentPrice.toFixed(2) +
-        ' | SL: ' + risk.stop.toFixed(2) +
-        ' | TP: ' + risk.target.toFixed(2) +
-        ' | R:R ' + risk.rr.toFixed(2) +
-        sizeText;
-    }
+    const verdict = computeVerdict({
+      marketOpen: marketState.open,
+      marketFamily: marketState.family,
+      overallDirection: overallDirection,
+      buyShare: buyShare,
+      biasValid: biasValid,
+      avgAdxAligned: avgAdxAligned,
+      adxMin: adxMin,
+      consensusLabel: consensusLabel,
+      consensusScore: consensusScore,
+      dangerCount: dangerCount,
+      dangerBlock: dangerBlock,
+      risk: risk,
+      minRR: minRR,
+      fmt: fmt
+    });
 
     const conclusionParts = [];
+    const dirText = overallDirection === 1 ? 'alcista' : overallDirection === -1 ? 'bajista' : 'neutral';
     if (!marketState.open) {
-      conclusionParts.push('Mercado cerrado.');
+      conclusionParts.push('Mercado cerrado para ' + symbol + ' (' + marketState.family + ').');
+    } else if (verdict.state === 'buy' || verdict.state === 'sell') {
+      conclusionParts.push('Setup ' + dirText + ' con consenso ' + consensusScore.toFixed(0) + '%, confianza ' + confidence.toFixed(0) + '%.');
+      if (alerts.length > 0) conclusionParts.push(alerts.length + ' alerta(s).');
     } else {
-      conclusionParts.push('Setup ' + (overallDirection === 1 ? 'Alcista' : overallDirection === -1 ? 'Bajista' : 'Neutro') + ' (' + consensusScore.toFixed(0) + '%).');
-      conclusionParts.push(verdictReason);
+      conclusionParts.push('Sin setup válido: ' + verdict.reason);
     }
 
     return {
@@ -557,70 +615,34 @@
       consensusText: LABELS[consensusLabel],
       confidence: confidence,
       overallDirection: overallDirection,
-      rawDirection: rawDirection,
-      previousDirection: previousDirection,
       perTf: perTf,
-      macroTrend: avgAdxAligned >= 25 ? 'Fuerte' : (avgAdxAligned >= 18 ? 'Moderada' : 'Débil'),
+      macroTrend: macroTrend,
       macroMomentum: macroMomentum,
       macroVolatility: macroVolatility,
       avgAdxAligned: avgAdxAligned,
+      avgAdxOpposed: avgAdxOpposed,
       alerts: alerts,
-      verdictState: verdictState,
-      verdictLabel: verdictLabel,
-      verdictReason: verdictReason,
+      verdictState: verdict.state,
+      verdictLabel: verdict.label,
+      verdictReason: verdict.reason,
       verdictRisk: risk,
-      positionSizing: sizing,
-      vwap: vwapInfo,
       marketOpen: marketState.open,
       highLiquidity: liquidityState.overlap,
       sessionLabel: sessionLabel,
       symbolFamily: marketState.family,
       entryTf: entryTf,
-      volumeOk: volumeOk,
-      higherTfOk: higherTfOk,
-      vwapOk: vwapOk,
-      conclusion: conclusionParts.join(' ')
+      conclusion: conclusionParts.join(' '),
+      computedAt: Date.now()
     };
   }
 
-  function applySmc(result, smc) {
-    if (!result || !smc) return result;
-
-    result.smcScore = num(smc.score) ? smc.score : 0;
-    result.smcGrade = smc.grade || null;
-    result.smcLabel = smc.label || null;
-    result.smcVetoed = smc.vetoed === true;
-    result.smcSequence = smc.sequence || null;
-
-    if (smc.vetoed === true) {
-      result.confidence = 0;
-      result.verdictState = 'wait';
-      result.verdictLabel = 'ESPERAR';
-      const vetoes = (smc.vetoes && smc.vetoes.length) ? ' ' + smc.vetoes.join(' ') : '';
-      result.verdictReason = 'SMC sin confluencia.' + vetoes;
-      result.conclusion = 'Setup vetado por SMC. ' + result.verdictReason;
-      return result;
-    }
-
-    if (smc.grade === 'Alta') {
-      result.confidence = Math.min(100, result.confidence * 1.2);
-      result.smcBoost = true;
-    } else if (smc.grade === 'Débil') {
-      result.confidence = result.confidence * 0.7;
-      result.smcPenalty = true;
-    }
-
-    if (result.conclusion && result.smcGrade) {
-      const seq = smc.sequence && smc.sequence.valid ? ' [secuencia OK]' : '';
-      result.conclusion += ' SMC: ' + result.smcGrade + ' (' + result.smcScore.toFixed(0) + '%)' + seq + '.';
-    }
-
-    return result;
+  function invalidateCache() {
+    _cache.clear();
   }
 
   return {
     analyze: analyze,
-    applySmc: applySmc,
+    invalidateCache: invalidateCache,
     LABELS: LABELS,
     SESSION_LABELS: SESSION_LABELS,
     getMarketState: getMarketState,

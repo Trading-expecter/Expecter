@@ -1,106 +1,108 @@
 window.AT_CONFIG = {
-  version: '4.0.0-SMC-FUSION',
+  version: '4.0.0',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
-  symbols: {
-    XAUUSD: { name: 'Oro / Dólar', digits: 2, contract: 100, spread: 0.30, family: 'metals', enabled: true },
-    XAGUSD: { name: 'Plata / Dólar', digits: 3, contract: 5000, spread: 0.03, family: 'metals', enabled: false },
-    XAUEUR: { name: 'Oro / Euro', digits: 2, contract: 100, spread: 0.40, family: 'metals', enabled: false },
-    EURUSD: { name: 'Euro / Dólar', digits: 5, contract: 100000, spread: 0.00010, family: 'forex', enabled: false },
-    BNBUSD: { name: 'BNB / Dólar', digits: 2, contract: 1, spread: 0.30, family: 'crypto', enabled: false },
-    BTCUSD: { name: 'Bitcoin / Dólar', digits: 2, contract: 1, spread: 0.60, family: 'crypto', enabled: false }
+  timings: {
+    updateIntervalMs: 1000,
+    priceCheckMs: 500,
+    renderRaf: true,
+    cycleBudgetMs: 4500,
+    staleBarsMs: 20000,
+    maxSignalAgeMs: 5000
   },
 
-  alias: {
-    XAUUSD: 'XAUUSD',
-    XAGUSD: 'XAGUSD',
-    XAUEUR: 'XAUEUR',
-    EURUSD: 'EURUSD',
-    BNBUSD: 'BNBUSD',
-    BTCUSD: 'BTCUSD'
+  symbols: {
+    XAUUSD: { name: 'Oro / Dólar',     digits: 2, contract: 100,    spread: 0.30,    family: 'metals', enabled: true },
+    XAGUSD: { name: 'Plata / Dólar',   digits: 3, contract: 5000,   spread: 0.03,    family: 'metals', enabled: true },
+    XAUEUR: { name: 'Oro / Euro',      digits: 2, contract: 100,    spread: 0.40,    family: 'metals', enabled: true },
+    EURUSD: { name: 'Euro / Dólar',    digits: 5, contract: 100000, spread: 0.00010, family: 'forex',  enabled: true },
+    BNBUSD: { name: 'BNB / Dólar',     digits: 2, contract: 1,      spread: 0.30,    family: 'crypto', enabled: true },
+    BTCUSD: { name: 'Bitcoin / Dólar', digits: 2, contract: 1,      spread: 0.60,    family: 'crypto', enabled: true }
   },
 
   timeframes: {
     entry: '15m',
-    list: ['5m', '15m', '1h'],
-    bias: ['1h'],
-    weights: { '5m': 1, '15m': 3, '1h': 4 }
+    list: ['15m', '1h', '4h', '1d'],
+    bias: ['4h', '1d'],
+    weights: { '15m': 1, '1h': 2, '4h': 4, '1d': 8 }
   },
 
   regime: {
     adxPeriod: 14,
-    adxMin: 20,
-    adxStrong: 25,
-    emaFast: 9,
-    emaSlow: 21,
-    emaSeparationMinPct: 0.10,
-    returnLookback: 10,
-    returnMinPct: 0.15
+    adxMin: 22,
+    adxStrong: 28,
+    emaFast: 50,
+    emaSlow: 200,
+    emaSeparationMinPct: 0.5,
+    returnLookback: 30,
+    returnMinPct: 0.2
   },
 
   consensus: {
-    minimumValidTfs: 2,
-    enterThreshold: 0.60,
-    exitThreshold: 0.45,
+    minimumValidTfs: 3,
     weightedMajority: 0.60,
+    thresholds: { strong: 65, moderate: 45 },
     adxNormalizationCeiling: 40,
-    thresholds: { strong: 60, moderate: 40 }
-  },
-
-  verdict: {
-    minHoldMs: 45000,
-    minConfirmations: 2,
-    minPendingMs: 5000
+    tieBreak: 'higher_tf'
   },
 
   risk: {
     atrPeriod: 14,
-    atrStopMult: 1.2,
-    atrTargetMult: 2.0,
-    minRR: 1.5,
-    maxRiskPct: 0.5,
-    maxSignalAgeBars: 5,
-    accountBalance: 10000
+    atrStopMult: 1.5,
+    atrTargetMult: 3.0,
+    minRR: 1.8,
+    maxRiskPct: 1.0,
+    maxSignalAgeBars: 8
   },
 
-  vwap: {
-    enabled: true,
-    resetHourUtc: 0,
-    biasFilterPct: 0.10,
-    useAsBiasFilter: true
+  signal: {
+    primeThreshold: 80,
+    goodThreshold: 65,
+    moderateThreshold: 40,
+    weakBelow: 40,
+    entryWindowLabel: 'ENTRY WINDOW',
+    stopBandAtrMult: 0.55,
+    targetBandAtrMult: 1.2,
+    requireHtfAlignment: true,
+    minComponents: 2
   },
 
   exhaustion: {
     rsiPeriod: 14,
-    rsiOverbought: 75,
-    rsiOversold: 25,
+    rsiOverbought: 80,
+    rsiOversold: 20,
     adxDropPct: 30,
     lookbackCandles: 5,
     volumeDropPct: 40,
     volumeLookback: 20,
-    divergenceLookback: 10,
+    divergenceLookback: 15,
     divergenceGap: 1,
-    consensusOverextension: 90,
-    dangerBlockThreshold: 3
+    consensusOverextension: 95,
+    dangerBlockThreshold: 2
   },
 
   smc: {
     atrPeriod: 14,
-    pivotLookback: 3,
-    mssWindow: 12,
-    sweepWindow: 4,
+    pivotLookback: 5,
+    mssWindow: 15,
+    mssDisplacementBodyRatio: 0.55,
+    mssDisplacementAtrMult: 1.0,
+    displacementEnabled: false,
+    zigzagAtrMult: 1.8,
+    zigzagEnabled: true,
+    sweepWindow: 5,
     sweepAtrMult: 0.35,
     sweepMaxAtrMult: 1.8,
     sweepRejectionMin: 0.5,
-    obAtrMult: 1.5,
-    obMidlineRatio: 0.5,
+    obAtrMult: 1.8,
     obMaxZones: 3,
     obMaxAgeBars: 150,
+    obMitigationCloseOnly: true,
     fvgMaxZones: 3,
     fvgMinAtrMult: 0.30,
     fvgMaxAge: 60,
-    fvgMiddleBodyAtrMult: 0.5,
+    fvgMitigationCloseOnly: true,
     eqToleranceAtrMult: 0.10,
     oteMin: 0.618,
     oteMax: 0.79,
@@ -108,65 +110,85 @@ window.AT_CONFIG = {
     oteSwingRecency: 25,
     minSwingAtrMult: 4,
     maxSwingAge: 200,
+    swingBodyRatioMin: 0.5,
+    requireBosForOte: false,
+    requirePremiumDiscount: false,
     weights: { mss: 30, sweep: 25, fvg: 15, ob: 15, ote: 15 },
+    bosWeightFactor: 0.5,
+    staleMssFactor: 0.5,
+    sweepAgainstPenalty: 15,
+    htfBiasBonus: 10,
+    htfBiasPenalty: 10,
     requireZoneForHigh: true,
-    highConfluence: 70,
-    mediumConfluence: 45,
-    minComponentsForMedium: 2
+    highConfluence: 80,
+    mediumConfluence: 50,
+    minComponentsForMedium: 2,
+    minConfidence: 15,
+    riskTiers: { high: 1.0, medium: 0.5, low: 0.25, vetoed: 0.0 },
+    blockers: {
+      enabled: false,
+      strict: false,
+      lowVolumeHours: [],
+      newsWindows: []
+    }
   },
 
   sessions: {
-    london: { startGmt: 8, endGmt: 16 },
-    newYork: { startGmt: 13, endGmt: 21 },
+    london:   { startGmt: 8,  endGmt: 16 },
+    newYork:  { startGmt: 13, endGmt: 21 },
     combined: { startGmt: 13, endGmt: 16 },
     dstAdjust: false,
     requireActive: false
   },
 
   tradingHours: {
-    forex: { alwaysOpen: false, open: { day: 0, hour: 22 }, close: { day: 5, hour: 22 } },
+    forex:  { alwaysOpen: false, open: { day: 0, hour: 22 }, close: { day: 5, hour: 22 } },
     metals: { alwaysOpen: false, open: { day: 0, hour: 23 }, close: { day: 5, hour: 22 } },
     crypto: { alwaysOpen: true },
-    index: { alwaysOpen: false, open: { day: 0, hour: 22 }, close: { day: 5, hour: 21 } }
+    index:  { alwaysOpen: false, open: { day: 0, hour: 22 }, close: { day: 5, hour: 21 } }
   },
 
   feed: {
     fetchTimeout: 8000,
     globalTimeout: 20000,
-    pollMs: 1000,
-    pollSlowMs: 5000,
+    pollMs: 2000,
+    pollSlowMs: 20000,
     retryMs: 60000,
     backoffMs: 10000,
     maxConcurrent: 3,
-    staleThresholdMs: 15000
+    staleThresholdMs: 15000,
+    maxRetries: 3,
+    wsEnabled: true,
+    wsReconnectMs: 3000,
+    wsMaxReconnectMs: 30000
   },
 
   chart: {
     defaultCount: 150,
     minCount: 20,
     maxCount: 1000,
-    emaPeriods: [9, 21, 50],
+    emaPeriods: [20, 50, 200],
     colors: {
-      ema9: '#f59e0b',
-      ema21: '#00b8d9',
-      ema50: '#a855f7',
-      up: '#10b981',
-      down: '#f43f5e',
-      grid: 'rgba(255, 255, 255, 0.06)',
-      zoneOB: 'rgba(16, 185, 129, 0.15)',
-      zoneFVG: 'rgba(0, 184, 217, 0.15)',
-      zoneOTE: 'rgba(168, 85, 247, 0.15)',
-      vwap: '#eab308',
-      drawing: '#00b8d9',
-      drawingInProgress: 'rgba(34, 211, 238, 0.75)',
-      drawingText: 'rgba(230, 237, 243, 0.85)'
+      ema20: '#F59E0B',
+      ema50: '#22D3EE',
+      ema200: '#A855F7',
+      up: '#00D4AA',
+      down: '#FF4D6A',
+      grid: 'rgba(255, 255, 255, 0.04)',
+      zoneOB: 'rgba(0, 212, 170, 0.14)',
+      zoneOBbear: 'rgba(255, 77, 106, 0.14)',
+      zoneFVG: 'rgba(79, 140, 255, 0.14)',
+      zoneOTE: 'rgba(168, 85, 247, 0.14)',
+      drawing: '#4F8CFF',
+      drawingInProgress: 'rgba(79, 140, 255, 0.75)',
+      drawingText: 'rgba(241, 245, 249, 0.85)'
     }
   },
 
   drawing: {
     enabled: true,
     fullscreenOnly: true,
-    defaultColor: '#00b8d9',
+    defaultColor: '#4F8CFF',
     lineWidth: 1.8,
     previewDash: [4, 4],
     fibLevels: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1],
@@ -174,8 +196,7 @@ window.AT_CONFIG = {
   },
 
   analysis: {
-    minBarsPerTf: 30,
-    throttleMs: 1500,
-    useClosedCandlesOnly: false
+    minBarsPerTf: 50,
+    useClosedCandlesOnly: true
   }
 };

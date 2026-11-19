@@ -10,23 +10,12 @@
   const MAX_COUNT = 1000;
   const RESIZE_DEBOUNCE_MS = 100;
   const WHEEL_ZOOM_FACTOR = 1.1;
-  const DEFAULT_EMA_PERIODS = [9, 21, 50];
-  const EMA_FALLBACK_COLORS = ['#f59e0b', '#00b8d9', '#a855f7'];
-  const STORAGE_PREFIX = 'mcp:drawings:';
+  const EMA_PERIODS = [20, 50, 200];
+  const STORAGE_PREFIX = 'shadow:drawings:';
   const MIN_DRAW_PIXELS = 5;
 
   function cfg() { return (window.AT_CONFIG && window.AT_CONFIG.chart) || {}; }
   function drawCfg() { return (window.AT_CONFIG && window.AT_CONFIG.drawing) || {}; }
-  function vwapCfg() { return (window.AT_CONFIG && window.AT_CONFIG.vwap) || {}; }
-
-  function emaPeriods() {
-    const p = cfg().emaPeriods;
-    return (Array.isArray(p) && p.length) ? p : DEFAULT_EMA_PERIODS;
-  }
-
-  function emaFallbackColor(i) {
-    return EMA_FALLBACK_COLORS[i % EMA_FALLBACK_COLORS.length];
-  }
 
   function color(key, fallback) {
     const colors = cfg().colors;
@@ -48,17 +37,8 @@
     return tool === 'line' || tool === 'h' || tool === 'v' || tool === 'rect' || tool === 'fib';
   }
 
-  function emptyZones() {
-    return { ob: null, fvg: null, ote: null };
-  }
-
-  function normalizeZones(zones) {
-    if (!zones || typeof zones !== 'object') return emptyZones();
-    return {
-      ob: zones.ob || null,
-      fvg: zones.fvg || null,
-      ote: zones.ote || null
-    };
+  function isValidZone(zone) {
+    return zone && Number.isFinite(zone.top) && Number.isFinite(zone.bottom) && zone.top > zone.bottom;
   }
 
   function create(canvas, opts) {
@@ -79,32 +59,22 @@
       drag: null,
       pinchStart: null,
       raf: 0,
+      dirty: true,
       resizeTimer: null,
-      emas: [],
+      emas: { e20: [], e50: [], e200: [] },
       emasMeta: { lastLen: 0, firstT: 0, lastC: NaN },
-      vwapArr: [],
-      vwapMeta: { lastLen: 0, lastC: NaN, sessionKey: null },
-      zones: emptyZones(),
+      zones: { ob: null, fvg: null, ote: null },
       tool: 'cursor',
       drawings: [],
       draft: null,
       pendingDraw: null
     };
 
+    canvas.style.touchAction = 'none';
+
     function scopeKey() {
       const scope = st.symbol || 'default';
       return STORAGE_PREFIX + scope + ':' + (st.tf || '1h');
-    }
-
-    function loadDrawings() {
-      try {
-        const raw = window.localStorage.getItem(scopeKey());
-        if (!raw) { st.drawings = []; return; }
-        const parsed = JSON.parse(raw);
-        st.drawings = Array.isArray(parsed) ? parsed.filter(isValidDrawing) : [];
-      } catch (e) {
-        st.drawings = [];
-      }
     }
 
     function isValidDrawing(d) {
@@ -113,6 +83,15 @@
       if (d.p2 && (typeof d.p2.t !== 'number' || typeof d.p2.price !== 'number')) return false;
       if (d.type !== 'line' && d.type !== 'h' && d.type !== 'v' && d.type !== 'rect' && d.type !== 'fib') return false;
       return true;
+    }
+
+    function loadDrawings() {
+      try {
+        const raw = window.localStorage.getItem(scopeKey());
+        if (!raw) { st.drawings = []; return; }
+        const parsed = JSON.parse(raw);
+        st.drawings = Array.isArray(parsed) ? parsed.filter(isValidDrawing) : [];
+      } catch (e) { st.drawings = []; }
     }
 
     function saveDrawings() {
@@ -132,13 +111,13 @@
       if (!n) return null;
       const count = Math.min(st.count, n);
       const end = Math.min(n, Math.max(count, n - st.offset));
-      return { start: end - count, end: end, count: count };
+      return { start: end - count, end, count };
     }
 
     function plotDims() {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
-      return { w: w, h: h, plotW: w - PAD.l - PAD.r, plotH: h - PAD.t - PAD.b };
+      return { w, h, plotW: w - PAD.l - PAD.r, plotH: h - PAD.t - PAD.b };
     }
 
     function timeAtIndex(idx) {
@@ -168,8 +147,7 @@
       let hi = last;
       while (lo < hi - 1) {
         const mid = (lo + hi) >> 1;
-        if (bars[mid].t <= t) lo = mid;
-        else hi = mid;
+        if (bars[mid].t <= t) lo = mid; else hi = mid;
       }
       const t1 = bars[lo].t;
       const t2 = bars[hi].t;
@@ -183,7 +161,7 @@
       const t = timeAtIndex(idx);
       const relY = (py - PAD.t) / plotH;
       const price = bounds.hi - relY * (bounds.hi - bounds.lo);
-      return { t: t, price: price };
+      return { t, price };
     }
 
     function dataToScreen(dataPoint, r, bounds, plotW, plotH) {
@@ -191,7 +169,7 @@
       const step = plotW / r.count;
       const x = PAD.l + (idx - r.start) * step + step / 2;
       const y = PAD.t + (bounds.hi - dataPoint.price) / (bounds.hi - bounds.lo) * plotH;
-      return { x: x, y: y };
+      return { x, y };
     }
 
     function strokeLine(x1, y1, x2, y2, strokeColor, dashed, width) {
@@ -223,8 +201,8 @@
 
     function fillText(text, x, y, fillColor, align) {
       ctx.save();
-      ctx.fillStyle = fillColor || color('drawingText', 'rgba(230, 237, 243, 0.85)');
-      ctx.font = '11px system-ui, sans-serif';
+      ctx.fillStyle = fillColor || color('drawingText', 'rgba(241, 245, 249, 0.85)');
+      ctx.font = '11px "JetBrains Mono", system-ui, sans-serif';
       ctx.textAlign = align || 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(text, x, y);
@@ -271,8 +249,8 @@
 
     function renderDrawing(d, r, bounds, plotW, plotH, isDraft) {
       if (!d || !d.p1) return;
-      const baseCol = d.color || drawCfg().defaultColor || color('drawing', '#00b8d9');
-      const strokeColor = isDraft ? color('drawingInProgress', 'rgba(34, 211, 238, 0.75)') : baseCol;
+      const baseCol = d.color || drawCfg().defaultColor || color('drawing', '#4F8CFF');
+      const strokeColor = isDraft ? color('drawingInProgress', 'rgba(79, 140, 255, 0.75)') : baseCol;
       const dashed = isDraft;
 
       const s1 = dataToScreen(d.p1, r, bounds, plotW, plotH);
@@ -292,72 +270,51 @@
 
       const s2 = dataToScreen(p2, r, bounds, plotW, plotH);
 
-      if (d.type === 'line') {
-        strokeLine(s1.x, s1.y, s2.x, s2.y, strokeColor, dashed);
-        return;
+      if (d.type === 'line') { strokeLine(s1.x, s1.y, s2.x, s2.y, strokeColor, dashed); return; }
+      if (d.type === 'rect') { strokeRect(s1.x, s1.y, s2.x, s2.y, strokeColor, dashed); return; }
+      if (d.type === 'fib') { drawFib(d.p1, p2, r, bounds, plotW, plotH, strokeColor, dashed); return; }
+    }
+
+    function drawZone(zone, fillColor, r, x, y, plotW) {
+      if (!isValidZone(zone)) return;
+      const idx = zone.index != null ? zone.index : r.start;
+      if (idx >= r.end) return;
+      const xStart = idx >= r.start ? x(idx) : PAD.l;
+      const xEnd = PAD.l + plotW;
+      if (xStart >= xEnd) return;
+      const yTop = y(zone.top);
+      const yBottom = y(zone.bottom);
+      if (!Number.isFinite(yTop) || !Number.isFinite(yBottom)) return;
+
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(xStart, yTop, xEnd - xStart, yBottom - yTop);
+
+      if (zone.type && zone.type.indexOf('FVG') !== -1) {
+        const ce = (zone.top + zone.bottom) / 2;
+        const ceY = y(ce);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(241, 245, 249, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(xStart, ceY);
+        ctx.lineTo(xEnd, ceY);
+        ctx.stroke();
+        ctx.restore();
       }
-      if (d.type === 'rect') {
-        strokeRect(s1.x, s1.y, s2.x, s2.y, strokeColor, dashed);
-        return;
-      }
-      if (d.type === 'fib') {
-        drawFib(d.p1, p2, r, bounds, plotW, plotH, strokeColor, dashed);
-        return;
-      }
-    }
-
-    function setTool(tool) {
-      if (!drawCfg().enabled && tool !== 'cursor') return;
-      st.tool = tool || 'cursor';
-      st.pendingDraw = null;
-      st.draft = null;
-      pointers.clear();
-      st.drag = null;
-      st.pinchStart = null;
-      schedule();
-    }
-
-    function undo() {
-      if (!st.drawings.length) return;
-      st.drawings.pop();
-      saveDrawings();
-      schedule();
-    }
-
-    function clearDrawings() {
-      st.drawings = [];
-      st.draft = null;
-      st.pendingDraw = null;
-      saveDrawings();
-      schedule();
-    }
-
-    function cancelDrawing() {
-      if (!st.draft && !st.pendingDraw) return false;
-      st.draft = null;
-      st.pendingDraw = null;
-      pointers.clear();
-      st.drag = null;
-      st.pinchStart = null;
-      schedule();
-      return true;
     }
 
     function schedule() {
+      st.dirty = true;
       if (st.raf) return;
       st.raf = requestAnimationFrame(function () {
         st.raf = 0;
-        draw();
+        if (st.dirty) { st.dirty = false; draw(); }
       });
     }
 
     function computeEmas(closes) {
-      const periods = emaPeriods();
-      const out = new Array(periods.length);
-      for (let i = 0; i < periods.length; i++) {
-        out[i] = I.ema(closes, periods[i]);
-      }
-      return out;
+      return { e20: I.ema(closes, EMA_PERIODS[0]), e50: I.ema(closes, EMA_PERIODS[1]), e200: I.ema(closes, EMA_PERIODS[2]) };
     }
 
     function updateLast(prevArr, closes, period) {
@@ -377,11 +334,6 @@
       const out = prevArr.slice();
       out.push(I.updateEma(prevVal, closes[lastIdx], period));
       return out;
-    }
-
-    function computeVwap(bars) {
-      if (vwapCfg().enabled !== true) return [];
-      return I.vwap(bars, vwapCfg().resetHourUtc != null ? vwapCfg().resetHourUtc : 0);
     }
 
     function setData(bars, o) {
@@ -408,33 +360,23 @@
       }
 
       const closes = st.bars.map(function (b) { return b.c; });
-      const periods = emaPeriods();
-      const emasLenMismatch = st.emas.length !== periods.length;
 
-      if (identityChanged || prevLen === 0 || newLen < prevLen || emasLenMismatch) {
+      if (identityChanged || prevLen === 0 || newLen < prevLen) {
         st.emas = computeEmas(closes);
-        st.vwapArr = computeVwap(st.bars);
-        if (scopeChanged || bufferRotated) {
-          st.offset = 0;
-        }
+        if (scopeChanged || bufferRotated) st.offset = 0;
       } else if (newLen === prevLen) {
-        if (prevLen === 1) {
-          st.emas = computeEmas(closes);
-          st.vwapArr = computeVwap(st.bars);
-        } else if (closes[newLen - 1] !== st.emasMeta.lastC) {
-          for (let i = 0; i < periods.length; i++) {
-            st.emas[i] = updateLast(st.emas[i], closes, periods[i]);
-          }
-          st.vwapArr = computeVwap(st.bars);
+        if (prevLen === 1) st.emas = computeEmas(closes);
+        else if (closes[newLen - 1] !== st.emasMeta.lastC) {
+          st.emas.e20 = updateLast(st.emas.e20, closes, EMA_PERIODS[0]);
+          st.emas.e50 = updateLast(st.emas.e50, closes, EMA_PERIODS[1]);
+          st.emas.e200 = updateLast(st.emas.e200, closes, EMA_PERIODS[2]);
         }
       } else if (newLen === prevLen + 1) {
-        for (let i = 0; i < periods.length; i++) {
-          st.emas[i] = appendLast(st.emas[i], closes, periods[i]);
-        }
-        st.vwapArr = computeVwap(st.bars);
+        st.emas.e20 = appendLast(st.emas.e20, closes, EMA_PERIODS[0]);
+        st.emas.e50 = appendLast(st.emas.e50, closes, EMA_PERIODS[1]);
+        st.emas.e200 = appendLast(st.emas.e200, closes, EMA_PERIODS[2]);
       } else {
         st.emas = computeEmas(closes);
-        st.vwapArr = computeVwap(st.bars);
       }
 
       st.emasMeta.lastLen = newLen;
@@ -445,7 +387,11 @@
     }
 
     function setZones(zones) {
-      st.zones = normalizeZones(zones);
+      st.zones = {
+        ob: zones && zones.ob || null,
+        fvg: zones && zones.fvg || null,
+        ote: zones && zones.ote || null
+      };
       schedule();
     }
 
@@ -463,47 +409,26 @@
     function resize() { schedule(); }
 
     function addZoneToRange(zone, bounds) {
-      if (!zone) return;
+      if (!isValidZone(zone)) return;
       if (zone.top > bounds.hi) bounds.hi = zone.top;
       if (zone.bottom < bounds.lo) bounds.lo = zone.bottom;
     }
 
     function computeBounds(r) {
-      const vis = st.bars.slice(r.start, r.end);
       const bounds = { lo: Infinity, hi: -Infinity };
-      for (let i = 0; i < vis.length; i++) {
-        if (vis[i].l < bounds.lo) bounds.lo = vis[i].l;
-        if (vis[i].h > bounds.hi) bounds.hi = vis[i].h;
+      for (let i = r.start; i < r.end; i++) {
+        const b = st.bars[i];
+        if (b.l < bounds.lo) bounds.lo = b.l;
+        if (b.h > bounds.hi) bounds.hi = b.h;
       }
       addZoneToRange(st.zones.ob, bounds);
       addZoneToRange(st.zones.fvg, bounds);
       addZoneToRange(st.zones.ote, bounds);
-      for (let i = r.start; i < r.end; i++) {
-        const v = st.vwapArr[i];
-        if (v != null && Number.isFinite(v)) {
-          if (v < bounds.lo) bounds.lo = v;
-          if (v > bounds.hi) bounds.hi = v;
-        }
-      }
-      if (!Number.isFinite(bounds.lo) || !Number.isFinite(bounds.hi)) {
-        bounds.lo = 0;
-        bounds.hi = 1;
-      }
+      if (!Number.isFinite(bounds.lo) || !Number.isFinite(bounds.hi)) { bounds.lo = 0; bounds.hi = 1; }
       const pad = (bounds.hi - bounds.lo) * 0.1 || 1;
       bounds.lo -= pad;
       bounds.hi += pad;
       return bounds;
-    }
-
-    function drawZone(zone, fillColor, r, x, y, plotW) {
-      if (!zone) return;
-      const idx = zone.index != null ? zone.index : r.start;
-      if (idx >= r.end) return;
-      const xStart = idx >= r.start ? x(idx) : PAD.l;
-      const xEnd = PAD.l + plotW;
-      if (xStart >= xEnd) return;
-      ctx.fillStyle = fillColor;
-      ctx.fillRect(xStart, y(zone.top), xEnd - xStart, y(zone.bottom) - y(zone.top));
     }
 
     function draw() {
@@ -520,8 +445,6 @@
 
       const r = barsRange();
       if (!r) return;
-      const vis = st.bars.slice(r.start, r.end);
-      if (!vis.length) return;
 
       const plotW = dims.plotW;
       const plotH = dims.plotH;
@@ -532,10 +455,10 @@
       const y = function (p) { return PAD.t + (bounds.hi - p) / (bounds.hi - bounds.lo) * plotH; };
       const x = function (idx) { return PAD.l + (idx - r.start) * step + step / 2; };
 
-      ctx.font = '11px system-ui, sans-serif';
+      ctx.font = '11px "JetBrains Mono", system-ui, sans-serif';
       ctx.textBaseline = 'middle';
-      ctx.strokeStyle = color('grid', 'rgba(255, 255, 255, 0.06)');
-      ctx.fillStyle = '#64748b';
+      ctx.strokeStyle = color('grid', 'rgba(255, 255, 255, 0.04)');
+      ctx.fillStyle = '#64748B';
       ctx.textAlign = 'left';
       for (let k = 0; k <= 4; k++) {
         const p = bounds.lo + (bounds.hi - bounds.lo) * k / 4;
@@ -552,17 +475,15 @@
       ctx.rect(PAD.l, PAD.t, plotW, plotH);
       ctx.clip();
 
-      drawZone(st.zones.ote, color('zoneOTE', 'rgba(168, 85, 247, 0.15)'), r, x, y, plotW);
-      drawZone(st.zones.fvg, color('zoneFVG', 'rgba(0, 184, 217, 0.15)'), r, x, y, plotW);
+      drawZone(st.zones.ote, color('zoneOTE', 'rgba(168, 85, 247, 0.14)'), r, x, y, plotW);
+      drawZone(st.zones.fvg, color('zoneFVG', 'rgba(79, 140, 255, 0.14)'), r, x, y, plotW);
       if (st.zones.ob) {
-        const obColor = st.zones.ob.direction === 1
-          ? color('zoneOB', 'rgba(16, 185, 129, 0.15)')
-          : 'rgba(244, 63, 94, 0.15)';
+        const obColor = st.zones.ob.direction === 1 ? color('zoneOB', 'rgba(0, 212, 170, 0.14)') : color('zoneOBbear', 'rgba(255, 77, 106, 0.14)');
         drawZone(st.zones.ob, obColor, r, x, y, plotW);
       }
 
-      const upColor = color('up', '#10b981');
-      const downColor = color('down', '#f43f5e');
+      const upColor = color('up', '#00D4AA');
+      const downColor = color('down', '#FF4D6A');
 
       ctx.lineWidth = 1;
       ctx.strokeStyle = downColor;
@@ -605,59 +526,41 @@
         ctx.fillRect(Math.round(x(i) - bodyW / 2), top, bodyW, Math.max(1, bot - top));
       }
 
-      function drawSeries(arr, strokeColor, width) {
+      function drawEma(arr, strokeColor) {
         ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = width || 1.5;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         let started = false;
         for (let i = r.start; i < r.end; i++) {
           const v = arr[i];
           if (v == null || !Number.isFinite(v)) continue;
-          if (!started) { ctx.moveTo(x(i), y(v)); started = true; }
-          else ctx.lineTo(x(i), y(v));
+          if (!started) { ctx.moveTo(x(i), y(v)); started = true; } else ctx.lineTo(x(i), y(v));
         }
         ctx.stroke();
       }
+      drawEma(st.emas.e20, color('ema20', '#F59E0B'));
+      drawEma(st.emas.e50, color('ema50', '#22D3EE'));
+      drawEma(st.emas.e200, color('ema200', '#A855F7'));
 
-      if (vwapCfg().enabled === true && st.vwapArr && st.vwapArr.length) {
-        drawSeries(st.vwapArr, color('vwap', '#eab308'), 1.8);
-      }
-
-      const periods = emaPeriods();
-      for (let i = 0; i < periods.length; i++) {
-        const p = periods[i];
-        const arr = st.emas[i];
-        if (!arr) continue;
-        drawSeries(arr, color('ema' + p, emaFallbackColor(i)), 1.5);
-      }
-
-      for (let i = 0; i < st.drawings.length; i++) {
-        renderDrawing(st.drawings[i], r, bounds, plotW, plotH, false);
-      }
-
-      if (st.draft) {
-        renderDrawing(st.draft, r, bounds, plotW, plotH, true);
-      }
+      for (let i = 0; i < st.drawings.length; i++) renderDrawing(st.drawings[i], r, bounds, plotW, plotH, false);
+      if (st.draft) renderDrawing(st.draft, r, bounds, plotW, plotH, true);
 
       ctx.restore();
 
-      if (st.px != null && !st.drag && !st.pinchStart && !st.pendingDraw &&
-          st.px >= PAD.l && st.px <= PAD.l + plotW &&
-          st.py >= PAD.t && st.py <= PAD.t + plotH) {
-        ctx.strokeStyle = 'rgba(139, 152, 169, 0.5)';
+      if (st.tool === 'cursor' && st.px != null && !st.drag && !st.pinchStart && !st.pendingDraw &&
+          st.px >= PAD.l && st.px <= PAD.l + plotW && st.py >= PAD.t && st.py <= PAD.t + plotH) {
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.5)';
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        ctx.moveTo(st.px, PAD.t);
-        ctx.lineTo(st.px, PAD.t + plotH);
-        ctx.moveTo(PAD.l, st.py);
-        ctx.lineTo(PAD.l + plotW, st.py);
+        ctx.moveTo(st.px, PAD.t); ctx.lineTo(st.px, PAD.t + plotH);
+        ctx.moveTo(PAD.l, st.py); ctx.lineTo(PAD.l + plotW, st.py);
         ctx.stroke();
         ctx.setLineDash([]);
 
         const price = bounds.hi - (st.py - PAD.t) / plotH * (bounds.hi - bounds.lo);
-        ctx.fillStyle = '#141f2e';
+        ctx.fillStyle = '#161B24';
         ctx.fillRect(PAD.l + plotW + 1, st.py - 8, PAD.r - 2, 16);
-        ctx.fillStyle = '#e6edf3';
+        ctx.fillStyle = '#F1F5F9';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText(formatPrice(price), PAD.l + plotW + 5, st.py);
@@ -676,17 +579,13 @@
     }
 
     function insidePlot(p, dims) {
-      return p.x >= PAD.l && p.x <= PAD.l + dims.plotW &&
-             p.y >= PAD.t && p.y <= PAD.t + dims.plotH;
+      return p.x >= PAD.l && p.x <= PAD.l + dims.plotW && p.y >= PAD.t && p.y <= PAD.t + dims.plotH;
     }
 
     function onPointerDown(e) {
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-      if (st.pendingDraw && pointers.size === 2) {
-        st.draft = null;
-        st.pendingDraw = null;
-      }
+      if (st.pendingDraw && pointers.size === 2) { st.draft = null; st.pendingDraw = null; }
 
       if (isDrawingTool(st.tool) && pointers.size === 1) {
         const p = localPoint(e);
@@ -699,13 +598,7 @@
         const dataPoint = screenToData(p.x, p.y, r, bounds, dims.plotW, dims.plotH);
 
         if (st.tool === 'h' || st.tool === 'v') {
-          st.drawings.push({
-            id: newId(),
-            type: st.tool,
-            p1: dataPoint,
-            p2: dataPoint,
-            color: drawCfg().defaultColor || color('drawing', '#00b8d9')
-          });
+          st.drawings.push({ id: newId(), type: st.tool, p1: dataPoint, p2: dataPoint, color: drawCfg().defaultColor || color('drawing', '#4F8CFF') });
           saveDrawings();
           schedule();
           return;
@@ -729,9 +622,7 @@
     }
 
     function onPointerMove(e) {
-      if (pointers.has(e.pointerId)) {
-        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      }
+      if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if (st.pendingDraw) {
         const p = localPoint(e);
@@ -791,13 +682,7 @@
         const p = localPoint(e);
         const movedPx = Math.hypot(p.x - st.pendingDraw.startPx, p.y - st.pendingDraw.startPy);
         if (!wasCancel && movedPx >= MIN_DRAW_PIXELS) {
-          st.drawings.push({
-            id: newId(),
-            type: st.draft.type,
-            p1: st.draft.p1,
-            p2: st.draft.p2 || st.draft.p1,
-            color: drawCfg().defaultColor || color('drawing', '#00b8d9')
-          });
+          st.drawings.push({ id: newId(), type: st.draft.type, p1: st.draft.p1, p2: st.draft.p2 || st.draft.p1, color: drawCfg().defaultColor || color('drawing', '#4F8CFF') });
           saveDrawings();
         }
         st.draft = null;
@@ -807,11 +692,7 @@
       if (pointers.size < 2) st.pinchStart = null;
       if (pointers.size === 0) {
         st.drag = null;
-        if (wasCancel) {
-          st.px = null;
-          st.py = null;
-          if (opts.onHover) opts.onHover(null);
-        }
+        if (wasCancel) { st.px = null; st.py = null; if (opts.onHover) opts.onHover(null); }
       }
       schedule();
     }
@@ -824,26 +705,23 @@
     }
 
     function onWheel(e) {
+      const p = localPoint(e);
+      const dims = plotDims();
+      if (!insidePlot(p, dims)) return;
       e.preventDefault();
       zoom(e.deltaY > 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR);
     }
 
     function onResize() {
       if (st.resizeTimer) clearTimeout(st.resizeTimer);
-      st.resizeTimer = setTimeout(function () {
-        st.resizeTimer = null;
-        schedule();
-      }, RESIZE_DEBOUNCE_MS);
+      st.resizeTimer = setTimeout(function () { st.resizeTimer = null; schedule(); }, RESIZE_DEBOUNCE_MS);
     }
 
     function onKeyDown(e) {
       if (e.key !== 'Escape') return;
       if (st.draft || st.pendingDraw) {
-        st.draft = null;
-        st.pendingDraw = null;
-        pointers.clear();
-        st.drag = null;
-        st.pinchStart = null;
+        st.draft = null; st.pendingDraw = null; pointers.clear();
+        st.drag = null; st.pinchStart = null;
         schedule();
         e.stopImmediatePropagation();
       }
@@ -870,23 +748,59 @@
       st.draft = null;
       st.pendingDraw = null;
       ac.abort();
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+
+    function setTool(tool) {
+      if (!drawCfg().enabled && tool !== 'cursor') return;
+      st.tool = tool || 'cursor';
+      st.pendingDraw = null;
+      st.draft = null;
+      pointers.clear();
+      st.drag = null;
+      st.pinchStart = null;
+      schedule();
+    }
+
+    function undo() {
+      if (!st.drawings.length) return;
+      st.drawings.pop();
+      saveDrawings();
+      schedule();
+    }
+
+    function clearDrawings() {
+      st.drawings = [];
+      st.draft = null;
+      st.pendingDraw = null;
+      saveDrawings();
+      schedule();
+    }
+
+    function cancelDrawing() {
+      if (!st.draft && !st.pendingDraw) return false;
+      st.draft = null; st.pendingDraw = null; pointers.clear();
+      st.drag = null; st.pinchStart = null;
+      schedule();
+      return true;
     }
 
     return {
-      setData: setData,
-      setZones: setZones,
-      zoom: zoom,
-      reset: reset,
-      resize: resize,
-      destroy: destroy,
-      setTool: setTool,
-      undo: undo,
-      clearDrawings: clearDrawings,
-      cancelDrawing: cancelDrawing,
+      setData,
+      setZones,
+      zoom,
+      reset,
+      resize,
+      destroy,
+      setTool,
+      undo,
+      clearDrawings,
+      cancelDrawing,
       getTool: function () { return st.tool; },
       getDrawings: function () { return st.drawings.slice(); }
     };
   }
 
-  return { create: create };
+  return { create };
 }));

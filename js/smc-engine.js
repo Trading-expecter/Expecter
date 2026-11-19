@@ -3,16 +3,15 @@ window.AT.smcEngine = (function (I) {
   'use strict';
 
   const DEFAULT_ATR_PERIOD = 14;
-  const DEFAULT_HIGH_CONFLUENCE = 70;
-  const DEFAULT_MEDIUM_CONFLUENCE = 45;
-  const DEFAULT_MIN_CONFIDENCE = 5;
+  const DEFAULT_HIGH_CONFLUENCE = 80;
+  const DEFAULT_MEDIUM_CONFLUENCE = 50;
+  const DEFAULT_MIN_CONFIDENCE = 15;
   const DEFAULT_MIN_COMPONENTS = 2;
-  const SWEEP_AGAINST_PENALTY = 15;
-  const BOS_WEIGHT_FACTOR = 0.5;
-  const STALE_MSS_FACTOR = 0.5;
-  const SEQUENCE_BONUS = 15;
-  const SEQUENCE_MAX_AGE_SWEEP = 8;
-  const SEQUENCE_MAX_AGE_MSS = 12;
+  const DEFAULT_BOS_WEIGHT_FACTOR = 0.5;
+  const DEFAULT_STALE_MSS_FACTOR = 0.5;
+  const DEFAULT_SWEEP_AGAINST_PENALTY = 15;
+  const DEFAULT_HTF_BIAS_BONUS = 10;
+  const DEFAULT_HTF_BIAS_PENALTY = 10;
 
   function cfg() {
     return (window.AT_CONFIG && window.AT_CONFIG.smc) || {};
@@ -37,7 +36,7 @@ window.AT.smcEngine = (function (I) {
   }
 
   function requireZoneForHigh() {
-    return cfg().requireZoneForHigh === true;
+    return cfg().requireZoneForHigh !== false;
   }
 
   function atrPeriod() {
@@ -48,6 +47,50 @@ window.AT.smcEngine = (function (I) {
     return cfg().minComponentsForMedium != null ? cfg().minComponentsForMedium : DEFAULT_MIN_COMPONENTS;
   }
 
+  function minConfidence() {
+    return cfg().minConfidence != null ? cfg().minConfidence : DEFAULT_MIN_CONFIDENCE;
+  }
+
+  function bosWeightFactor() {
+    return cfg().bosWeightFactor != null ? cfg().bosWeightFactor : DEFAULT_BOS_WEIGHT_FACTOR;
+  }
+
+  function staleMssFactor() {
+    return cfg().staleMssFactor != null ? cfg().staleMssFactor : DEFAULT_STALE_MSS_FACTOR;
+  }
+
+  function sweepAgainstPenalty() {
+    return cfg().sweepAgainstPenalty != null ? cfg().sweepAgainstPenalty : DEFAULT_SWEEP_AGAINST_PENALTY;
+  }
+
+  function htfBiasBonus() {
+    return cfg().htfBiasBonus != null ? cfg().htfBiasBonus : DEFAULT_HTF_BIAS_BONUS;
+  }
+
+  function htfBiasPenalty() {
+    return cfg().htfBiasPenalty != null ? cfg().htfBiasPenalty : DEFAULT_HTF_BIAS_PENALTY;
+  }
+
+  function riskTiers() {
+    const t = cfg().riskTiers || {};
+    return {
+      high: t.high != null ? t.high : 1.0,
+      medium: t.medium != null ? t.medium : 0.5,
+      low: t.low != null ? t.low : 0.25,
+      vetoed: t.vetoed != null ? t.vetoed : 0.0
+    };
+  }
+
+  function blockersCfg() {
+    const b = cfg().blockers || {};
+    return {
+      enabled: b.enabled === true,
+      strict: b.strict === true,
+      lowVolumeHours: Array.isArray(b.lowVolumeHours) ? b.lowVolumeHours : [],
+      newsWindows: Array.isArray(b.newsWindows) ? b.newsWindows : []
+    };
+  }
+
   function requireActiveSession() {
     const s = window.AT_CONFIG && window.AT_CONFIG.sessions;
     return !!(s && s.requireActive);
@@ -55,30 +98,62 @@ window.AT.smcEngine = (function (I) {
 
   function num(v) { return v != null && Number.isFinite(v); }
 
+  function missingModulesError(missing) {
+    const e = new Error('SMC: módulos no disponibles → ' + missing.join(', '));
+    e.code = 'SMC_MODULES_MISSING';
+    e.missing = missing;
+    return e;
+  }
+
+  function checkBlockers(now) {
+    const b = blockersCfg();
+    if (!b.enabled) return null;
+
+    const hour = now.getUTCHours() + now.getUTCMinutes() / 60;
+    for (let i = 0; i < b.lowVolumeHours.length; i++) {
+      const r = b.lowVolumeHours[i];
+      if (Array.isArray(r) && r.length >= 2 && hour >= r[0] && hour < r[1]) {
+        return { type: 'lowVolume', label: 'Hora de bajo volumen' };
+      }
+    }
+
+    const nowMs = now.getTime();
+    for (let i = 0; i < b.newsWindows.length; i++) {
+      const w = b.newsWindows[i];
+      if (w && num(w.start) && num(w.end) && nowMs >= w.start && nowMs < w.end) {
+        return { type: 'news', label: w.event || 'Ventana de noticias' };
+      }
+    }
+
+    return null;
+  }
+
   function emptyResult(direction, reason, context) {
     context = context || {};
     return {
       score: 0,
-      label: 'Escaneando',
+      label: 'Sin confluencia suficiente',
       direction: direction || 0,
       trend: 'Débil',
-      grade: null,
+      grade: 'Débil',
       reasons: [reason],
       breakdown: {},
       zones: { ob: null, fvg: null, ote: null, allOBs: [], allFVGs: [] },
-      vetoes: [],
-      vetoed: false,
+      vetoes: [reason],
+      vetoed: true,
+      riskMultiplier: 0.0,
+      blockerInfo: null,
       activeComponents: 0,
-      sequence: null,
-      context: context
+      context,
+      computedAt: Date.now()
     };
   }
 
   function computeAtr(bars) {
     if (!bars || bars.length < atrPeriod() + 1) return 0;
-    const highs = bars.map(function (b) { return b.h; });
-    const lows = bars.map(function (b) { return b.l; });
-    const closes = bars.map(function (b) { return b.c; });
+    const highs = bars.map(b => b.h);
+    const lows = bars.map(b => b.l);
+    const closes = bars.map(b => b.c);
     const arr = I.atr(highs, lows, closes, atrPeriod());
     for (let i = arr.length - 1; i >= 0; i--) {
       if (num(arr[i]) && arr[i] > 0) return arr[i];
@@ -86,57 +161,23 @@ window.AT.smcEngine = (function (I) {
     return 0;
   }
 
-  function checkSequence(bars, direction, sweeps, structure, obs, fvgs) {
-    if (!sweeps || !sweeps.length) return null;
-    const sweep = sweeps.find(function (s) { return s.direction === direction; });
-    if (!sweep) return null;
-
-    const lastIdx = bars.length - 1;
-    const sweepAge = lastIdx - sweep.index;
-    if (sweepAge > SEQUENCE_MAX_AGE_SWEEP) return null;
-
-    const mss = structure.mss;
-    if (!mss || mss.direction !== direction) return null;
-    if (mss.breakoutIndex == null) return null;
-    if (mss.breakoutIndex <= sweep.index) return null;
-
-    const mssAge = lastIdx - mss.breakoutIndex;
-    if (mssAge > SEQUENCE_MAX_AGE_MSS) return null;
-
-    const validFvg = fvgs.find(function (z) {
-      return z.direction === direction && z.index > sweep.index && z.index >= mss.breakoutIndex - 1;
-    });
-
-    const validOb = obs.find(function (z) {
-      return z.direction === direction && z.index > sweep.index && z.index >= mss.breakoutIndex - 1;
-    });
-
-    if (!validFvg && !validOb) return null;
-
-    return {
-      valid: true,
-      sweepIndex: sweep.index,
-      mssIndex: mss.breakoutIndex,
-      fvgIndex: validFvg ? validFvg.index : null,
-      obIndex: validOb ? validOb.index : null,
-      bonus: SEQUENCE_BONUS
-    };
+  function gradientScore(value, min, max) {
+    if (!num(value) || !(max > min)) return 0;
+    return Math.max(0, Math.min(1, (value - min) / (max - min)));
   }
 
   function evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w) {
     const result = {
       score: 0,
-      label: 'Escaneando',
-      direction: direction,
+      label: 'Sin confluencia suficiente',
+      direction,
       trend: 'Débil',
-      grade: null,
       reasons: [],
       breakdown: {},
       zones: { ob: null, fvg: null, ote: null, allOBs: obs, allFVGs: fvgs },
       vetoes: [],
       vetoed: false,
-      sequence: null,
-      context: context
+      context
     };
 
     const lastIdx = bars.length - 1;
@@ -146,40 +187,44 @@ window.AT.smcEngine = (function (I) {
     const mss = structure.mss;
     const mssMatches = mss && mss.direction === direction;
     if (mssMatches) {
-      const base = mss.type && mss.type.indexOf('MSS_') === 0 ? w.mss : w.mss * BOS_WEIGHT_FACTOR;
-      const freshness = mss.fresh !== false ? 1 : STALE_MSS_FACTOR;
-      const weighted = base * freshness;
+      const isMSS = mss.type && mss.type.indexOf('MSS_') === 0;
+      const base = isMSS ? w.mss : w.mss * bosWeightFactor();
+      const freshness = mss.fresh !== false ? 1 : staleMssFactor();
+      const strengthFactor = num(mss.strength) ? 0.5 + 0.5 * mss.strength : 1;
+      const weighted = base * freshness * strengthFactor;
       score += weighted;
       result.breakdown.mss = {
         value: base,
-        weighted: weighted,
-        reason: (mss.type || 'MSS') + ' a favor (velas: ' + mss.barsSince + ', cuerpo: ' + (mss.bodyAtr || 0).toFixed(2) + ' ATR)'
+        weighted,
+        reason: (mss.type || 'MSS') + ' a favor (barsSince ' + mss.barsSince + ', strength ' + (mss.strength || 1).toFixed(2) + ')'
       };
       result.reasons.push('Estructura a favor (' + (mss.type || 'MSS') + ').');
     } else {
       result.breakdown.mss = { value: 0, weighted: 0, reason: 'Sin estructura alineada' };
     }
 
-    const sweepFavor = sweeps.find(function (s) { return s.direction === direction; });
+    const sweepFavor = sweeps.find(s => s.direction === direction);
     if (sweepFavor) {
       const rejection = num(sweepFavor.rejectionRatio) ? sweepFavor.rejectionRatio : 1;
-      const weighted = w.sweep * rejection;
+      const rangeQuality = num(sweepFavor.rangeAtr) ? gradientScore(sweepFavor.rangeAtr, 0.6, 2.0) : 0.5;
+      const weighted = w.sweep * (0.5 * rejection + 0.5 * rangeQuality);
       score += weighted;
       result.breakdown.sweep = {
         value: w.sweep,
-        weighted: weighted,
+        weighted,
         rejectionRatio: rejection,
-        reason: 'Sweep a favor (rechazo ' + (rejection * 100).toFixed(0) + '%, ' + sweepFavor.barsSince + ' velas)'
+        rangeAtr: sweepFavor.rangeAtr,
+        reason: 'Sweep a favor (rechazo ' + (rejection * 100).toFixed(0) + '%, rango ' + (sweepFavor.rangeAtr || 0).toFixed(1) + ' ATR)'
       };
       result.reasons.push('Barrido de liquidez a favor.');
     } else {
-      result.breakdown.sweep = { value: 0, weighted: 0, reason: 'Sin sweep' };
+      result.breakdown.sweep = { value: 0, weighted: 0, reason: 'Sin sweep a favor' };
     }
 
-    const sweepAgainst = sweeps.find(function (s) { return s.direction !== direction; });
+    const sweepAgainst = sweeps.find(s => s.direction !== direction);
     if (sweepAgainst) {
       const rejection = num(sweepAgainst.rejectionRatio) ? sweepAgainst.rejectionRatio : 0.5;
-      const penalty = SWEEP_AGAINST_PENALTY * rejection;
+      const penalty = sweepAgainstPenalty() * rejection;
       score -= penalty;
       result.breakdown.penalty = {
         value: penalty,
@@ -194,11 +239,7 @@ window.AT.smcEngine = (function (I) {
       const weighted = w.fvg * strength;
       score += weighted;
       result.zones.fvg = activeFvg;
-      result.breakdown.fvg = {
-        value: w.fvg,
-        weighted: weighted,
-        reason: 'FVG activo (gap ' + (activeFvg.gapAtr || 0).toFixed(2) + ' ATR)'
-      };
+      result.breakdown.fvg = { value: w.fvg, weighted, reason: 'FVG activo (strength ' + strength.toFixed(2) + ')' };
       result.reasons.push('Precio en FVG.');
     } else {
       result.breakdown.fvg = { value: 0, weighted: 0, reason: 'Fuera de FVG' };
@@ -210,11 +251,7 @@ window.AT.smcEngine = (function (I) {
       const weighted = w.ob * strength;
       score += weighted;
       result.zones.ob = activeOb;
-      result.breakdown.ob = {
-        value: w.ob,
-        weighted: weighted,
-        reason: 'OB activo (desplazamiento ' + (activeOb.displacementAtr || 0).toFixed(2) + ' ATR)'
-      };
+      result.breakdown.ob = { value: w.ob, weighted, reason: 'OB activo (strength ' + strength.toFixed(2) + ')' };
       result.reasons.push('Precio en Order Block.');
     } else {
       result.breakdown.ob = { value: 0, weighted: 0, reason: 'Fuera de OB' };
@@ -229,28 +266,29 @@ window.AT.smcEngine = (function (I) {
       result.zones.ote = ote;
       result.breakdown.ote = {
         value: w.ote,
-        weighted: weighted,
-        reason: 'OTE activa (' + (proximity * 100).toFixed(0) + '%)'
+        weighted,
+        reason: 'OTE activa (proximidad ' + (proximity * 100).toFixed(0) + '%)'
       };
       result.reasons.push('Precio en OTE.');
     } else if (ote && ote.direction === direction && ote.state === 'pending') {
       const weighted = w.ote * 0.3;
       score += weighted;
-      result.breakdown.ote = { value: w.ote, weighted: weighted, reason: 'OTE pendiente' };
+      result.breakdown.ote = { value: w.ote, weighted, reason: 'OTE pendiente' };
     } else {
       result.breakdown.ote = { value: 0, weighted: 0, reason: 'Sin OTE' };
     }
 
-    const sequence = checkSequence(bars, direction, sweeps, structure, obs, fvgs);
-    if (sequence && sequence.valid) {
-      score += sequence.bonus;
-      result.sequence = sequence;
-      result.breakdown.sequence = {
-        value: sequence.bonus,
-        weighted: sequence.bonus,
-        reason: 'Secuencia Sweep → MSS → Zona confirmada'
+    const htfDir = context.htfDirection;
+    if (htfDir === 1 || htfDir === -1) {
+      const aligned = direction === htfDir;
+      const delta = aligned ? htfBiasBonus() : -htfBiasPenalty();
+      score += delta;
+      result.breakdown.htfBias = {
+        value: Math.abs(delta),
+        weighted: delta,
+        reason: aligned ? 'Alineado con sesgo HTF' : 'Contra sesgo HTF'
       };
-      result.reasons.push('Secuencia institucional confirmada.');
+      if (aligned) result.reasons.push('Alineado con el sesgo HTF.');
     }
 
     score = Math.max(0, Math.min(100, score));
@@ -258,7 +296,7 @@ window.AT.smcEngine = (function (I) {
     result.zonesActive = !!(result.zones.fvg || result.zones.ob || result.zones.ote);
     result.structureActive = mssMatches;
 
-    result.activeComponents = ['mss', 'sweep', 'fvg', 'ob', 'ote'].filter(function (k) {
+    result.activeComponents = ['mss', 'sweep', 'fvg', 'ob', 'ote'].filter(k => {
       const b = result.breakdown[k];
       return b && b.weighted > 0;
     }).length;
@@ -266,39 +304,52 @@ window.AT.smcEngine = (function (I) {
     return result;
   }
 
-  function applyVetoesAndGrade(result) {
+  function finalizeVetoed(result, tierValue) {
+    result.score = 0;
+    result.breakdown = { vetoed: { value: 0, weighted: 0, reason: 'Score vetado' } };
+    result.reasons = result.vetoes.map(v => '🚫 ' + v);
+    result.vetoed = true;
+    result.grade = 'Débil';
+    result.label = 'Sin confluencia suficiente';
+    result.trend = 'Débil';
+    result.riskMultiplier = tierValue != null ? tierValue : 0.0;
+    result.computedAt = Date.now();
+    return result;
+  }
+
+  function applyRiskAndGrade(result) {
     const th = thresholds();
     const ctx = result.context || {};
     const marketOpen = ctx.marketOpen !== false;
     const sessionActive = ctx.sessionActive !== false;
     const confidence = num(ctx.confidence) ? ctx.confidence : 100;
     const minComp = minComponentsForMedium();
+    const minConf = minConfidence();
+    const tiers = riskTiers();
 
-    let vetoed = false;
+    const blocker = checkBlockers(new Date());
+    result.blockerInfo = blocker;
+
+    const blockerCfg = blockersCfg();
 
     if (!marketOpen) {
       result.vetoes.push('Mercado cerrado.');
-      vetoed = true;
+      return finalizeVetoed(result, tiers.vetoed);
     }
 
     if (requireActiveSession() && !sessionActive) {
       result.vetoes.push('Fuera de sesión activa.');
-      vetoed = true;
+      return finalizeVetoed(result, tiers.vetoed);
     }
 
-    if (!vetoed && confidence < DEFAULT_MIN_CONFIDENCE) {
-      result.score = result.score * 0.5;
+    if (confidence < minConf) {
+      result.vetoes.push('Confianza insuficiente (' + confidence.toFixed(0) + '%).');
+      return finalizeVetoed(result, tiers.vetoed);
     }
 
-    if (vetoed) {
-      result.score = 0;
-      result.breakdown = { vetoed: { value: 0, weighted: 0, reason: 'Score vetado' } };
-      result.reasons = result.vetoes.map(function (v) { return '🚫 ' + v; });
-      result.vetoed = true;
-      result.grade = null;
-      result.label = 'Sin confluencia';
-      result.trend = 'Débil';
-      return result;
+    if (blocker && blockerCfg.strict) {
+      result.vetoes.push('Bloqueado: ' + blocker.label + '.');
+      return finalizeVetoed(result, tiers.vetoed);
     }
 
     let grade;
@@ -307,14 +358,14 @@ window.AT.smcEngine = (function (I) {
         grade = 'Moderada';
         result.vetoes.push('Score alto sin zona: rebajado a Moderada.');
       } else if (result.activeComponents < minComp) {
-        grade = null;
+        grade = 'Débil';
         result.vetoes.push('Score alto con ' + result.activeComponents + ' componente(s) < ' + minComp + '.');
       } else {
         grade = 'Alta';
       }
     } else if (result.score >= th.medium) {
       if (result.activeComponents < minComp) {
-        grade = null;
+        grade = 'Débil';
         result.vetoes.push('Solo ' + result.activeComponents + ' componente(s) activo(s). Mínimo ' + minComp + ' para Moderada.');
       } else {
         grade = 'Moderada';
@@ -324,21 +375,32 @@ window.AT.smcEngine = (function (I) {
     }
 
     if (grade === 'Alta') {
-      result.label = 'ENTRADA PERFECTA';
+      result.label = 'ENTRADA DE ALTA PROBABILIDAD';
       result.trend = 'Fuerte';
     } else if (grade === 'Moderada') {
       result.label = 'Entrada Moderada';
       result.trend = 'Media';
-    } else if (grade === 'Débil') {
+    } else {
       result.label = 'Sin confluencia suficiente';
       result.trend = 'Débil';
-    } else {
-      result.label = 'Sin confluencia';
-      result.trend = 'Débil';
+    }
+
+    let tierKey;
+    if (grade === 'Alta') tierKey = 'high';
+    else if (grade === 'Moderada') tierKey = 'medium';
+    else tierKey = 'low';
+
+    let multiplier = tiers[tierKey] != null ? tiers[tierKey] : tiers.low;
+
+    if (blocker) {
+      multiplier = multiplier * 0.5;
+      result.reasons.push('⚠ ' + blocker.label + ': riesgo reducido.');
     }
 
     result.vetoed = false;
     result.grade = grade;
+    result.riskMultiplier = multiplier;
+    result.computedAt = Date.now();
     return result;
   }
 
@@ -346,12 +408,8 @@ window.AT.smcEngine = (function (I) {
     context = context || {};
     direction = direction === 1 || direction === -1 ? direction : 0;
 
-    if (direction === 0) {
-      return emptyResult(0, 'Sin dirección definida por el consenso.', context);
-    }
-
-    if (!bars || bars.length < 15) {
-      return emptyResult(direction, 'Historial insuficiente (mínimo 15 velas).', context);
+    if (!bars || bars.length < 50) {
+      return emptyResult(direction, 'Historial insuficiente para analizar.', context);
     }
 
     const atr = computeAtr(bars);
@@ -359,32 +417,51 @@ window.AT.smcEngine = (function (I) {
       return emptyResult(direction, 'Volatilidad (ATR) no disponible.', context);
     }
 
-    const structureModule = window.AT.smc.structure;
-    const liquidity = window.AT.smc.liquidity;
-    const zones = window.AT.smc.zones;
-    const oteModule = window.AT.smc.ote;
+    const missing = [];
+    const structureModule = window.AT.smc && window.AT.smc.structure;
+    const liquidity = window.AT.smc && window.AT.smc.liquidity;
+    const zones = window.AT.smc && window.AT.smc.zones;
+    const oteModule = window.AT.smc && window.AT.smc.ote;
 
-    if (!structureModule || !liquidity || !zones || !oteModule) {
-      return emptyResult(direction, 'Módulos SMC no disponibles.', context);
-    }
+    if (!structureModule) missing.push('structure');
+    if (!liquidity) missing.push('liquidity');
+    if (!zones) missing.push('zones');
+    if (!oteModule) missing.push('ote');
 
-    const pivots = structureModule.findPivots(bars);
-    const structure = {
-      pivots: pivots,
-      mss: structureModule.detectMSS(bars, pivots, { atr: atr })
-    };
+    if (missing.length) throw missingModulesError(missing);
+
+    const structure = structureModule.detectStructure(bars, { atrValue: atr });
+    const pivots = structure.pivots;
 
     const sweeps = liquidity.detectSweeps(bars, pivots, atr, { allowBidirectional: true });
     const obs = zones.detectOrderBlocks(bars, atr, null);
     const fvgs = zones.detectFVG(bars, atr, null);
-    const ote = oteModule.calculateOTE(bars, pivots, direction, atr);
 
     const w = weights();
-    const res = evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w);
-    return applyVetoesAndGrade(res);
+
+    if (direction === 1 || direction === -1) {
+      const ote = oteModule.calculateOTE(bars, pivots, direction, atr, { mss: structure.mss });
+      const res = evaluateDirection(bars, direction, context, atr, structure, sweeps, obs, fvgs, ote, w);
+      return applyRiskAndGrade(res);
+    }
+
+    const oteLong = oteModule.calculateOTE(bars, pivots, 1, atr, { mss: structure.mss });
+    const oteShort = oteModule.calculateOTE(bars, pivots, -1, atr, { mss: structure.mss });
+
+    const resLong = evaluateDirection(bars, 1, context, atr, structure, sweeps, obs, fvgs, oteLong, w);
+    const resShort = evaluateDirection(bars, -1, context, atr, structure, sweeps, obs, fvgs, oteShort, w);
+
+    let winner;
+    if (resLong.score > resShort.score) winner = resLong;
+    else if (resShort.score > resLong.score) winner = resShort;
+    else return emptyResult(0, 'Evaluación bidireccional sin ventaja.', context);
+
+    return applyRiskAndGrade(winner);
   }
 
   return {
-    evaluate: evaluate
+    evaluate,
+    weights,
+    thresholds
   };
 })(window.AT.indicators);

@@ -4,57 +4,33 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function nulls(n) { return new Array(n).fill(null); }
+  function nulls(n) {
+    return new Array(n).fill(null);
+  }
 
-  function firstValid(values, from) {
-    const start = from || 0;
-    for (let i = start; i < values.length; i++) {
+  function firstValid(values) {
+    for (let i = 0; i < values.length; i++) {
       const v = values[i];
       if (v != null && Number.isFinite(v)) return i;
     }
     return -1;
   }
 
-  function last(values, k) { return values[values.length - 1 - (k || 0)]; }
-
-  function seedSum(values, start, period) {
-    let sum = 0;
-    for (let i = start; i < start + period; i++) {
-      const v = values[i];
-      if (v == null || !Number.isFinite(v)) return null;
-      sum += v;
-    }
-    return sum;
+  function last(values, k) {
+    return values[values.length - 1 - (k || 0)];
   }
 
   function sma(values, period) {
     const n = values.length;
     const out = nulls(n);
-    if (period <= 0 || n < period) return out;
-
-    let start = firstValid(values);
-    while (start >= 0 && start + period <= n) {
-      const sum = seedSum(values, start, period);
-      if (sum != null) {
-        out[start + period - 1] = sum / period;
-        for (let i = start + period; i < n; i++) {
-          const cur = values[i];
-          const drop = values[i - period];
-          if (cur == null || !Number.isFinite(cur) || drop == null || !Number.isFinite(drop)) {
-            out[i] = null;
-            continue;
-          }
-          const prev = out[i - 1];
-          if (prev == null) {
-            const winSum = seedSum(values, i - period + 1, period);
-            out[i] = winSum != null ? winSum / period : null;
-          } else {
-            out[i] = prev + (cur - drop) / period;
-          }
-        }
-        return out;
-      }
-      start = firstValid(values, start + 1);
+    const start = firstValid(values);
+    if (start < 0 || n - start < period) return out;
+    let sum = 0;
+    for (let i = start; i < start + period; i++) sum += values[i];
+    out[start + period - 1] = sum / period;
+    for (let i = start + period; i < n; i++) {
+      sum += values[i] - values[i - period];
+      out[i] = sum / period;
     }
     return out;
   }
@@ -62,41 +38,68 @@
   function smooth(values, period, alpha) {
     const n = values.length;
     const out = nulls(n);
-    if (period <= 0 || alpha <= 0 || alpha > 1 || n < period) return out;
-
-    let start = firstValid(values);
-    while (start >= 0 && start + period <= n) {
-      const sum = seedSum(values, start, period);
-      if (sum != null) {
-        let prev = sum / period;
-        out[start + period - 1] = prev;
-        for (let i = start + period; i < n; i++) {
-          const v = values[i];
-          if (v == null || !Number.isFinite(v)) { out[i] = null; continue; }
-          prev = alpha * v + (1 - alpha) * prev;
-          out[i] = prev;
-        }
-        return out;
-      }
-      start = firstValid(values, start + 1);
+    const start = firstValid(values);
+    if (start < 0 || n - start < period) return out;
+    let prev = 0;
+    for (let i = start; i < start + period; i++) prev += values[i];
+    prev /= period;
+    out[start + period - 1] = prev;
+    for (let i = start + period; i < n; i++) {
+      prev = alpha * values[i] + (1 - alpha) * prev;
+      out[i] = prev;
     }
     return out;
   }
 
-  function ema(values, period) { return smooth(values, period, 2 / (period + 1)); }
-  function rma(values, period) { return smooth(values, period, 1 / period); }
+  function ema(values, period) {
+    return smooth(values, period, 2 / (period + 1));
+  }
+
+  function rma(values, period) {
+    return smooth(values, period, 1 / period);
+  }
 
   function updateEma(previous, value, period) {
-    if (previous == null || !Number.isFinite(previous)) return value;
-    if (value == null || !Number.isFinite(value)) return previous;
     const k = 2 / (period + 1);
     return value * k + previous * (1 - k);
   }
 
   function updateRma(previous, value, period) {
-    if (previous == null || !Number.isFinite(previous)) return value;
-    if (value == null || !Number.isFinite(value)) return previous;
     return (previous * (period - 1) + value) / period;
+  }
+
+  function initEmaState(values, period) {
+    if (!values || values.length < period) return null;
+    let seed = 0;
+    for (let i = values.length - period; i < values.length; i++) seed += values[i];
+    seed /= period;
+    return { period: period, value: seed, ready: true };
+  }
+
+  function nextEma(state, value) {
+    if (!state || !Number.isFinite(value)) return state;
+    return {
+      period: state.period,
+      value: updateEma(state.value, value, state.period),
+      ready: true
+    };
+  }
+
+  function initRmaState(values, period) {
+    if (!values || values.length < period) return null;
+    let seed = 0;
+    for (let i = values.length - period; i < values.length; i++) seed += values[i];
+    seed /= period;
+    return { period: period, value: seed, ready: true };
+  }
+
+  function nextRma(state, value) {
+    if (!state || !Number.isFinite(value)) return state;
+    return {
+      period: state.period,
+      value: updateRma(state.value, value, state.period),
+      ready: true
+    };
   }
 
   function tr(highs, lows, closes) {
@@ -118,6 +121,11 @@
     return rma(tr(highs, lows, closes), period || 14);
   }
 
+  function rsiValue(g, l) {
+    if (l === 0) return g === 0 ? 50 : 100;
+    return 100 - 100 / (1 + g / l);
+  }
+
   function rsi(closes, period) {
     period = period || 14;
     const n = closes.length;
@@ -134,20 +142,72 @@
     gains /= period;
     losses /= period;
 
-    function value(g, l) {
-      if (l === 0) return g === 0 ? 50 : 100;
-      return 100 - 100 / (1 + g / l);
-    }
-
-    out[period] = value(gains, losses);
+    out[period] = rsiValue(gains, losses);
 
     for (let i = period + 1; i < n; i++) {
       const change = closes[i] - closes[i - 1];
       gains = (gains * (period - 1) + (change > 0 ? change : 0)) / period;
       losses = (losses * (period - 1) + (change < 0 ? -change : 0)) / period;
-      out[i] = value(gains, losses);
+      out[i] = rsiValue(gains, losses);
     }
     return out;
+  }
+
+  function initRsiState(closes, period) {
+    period = period || 14;
+    if (!closes || closes.length <= period) return null;
+    let gains = 0;
+    let losses = 0;
+    for (let i = 1; i <= period; i++) {
+      const change = closes[i] - closes[i - 1];
+      if (change >= 0) gains += change;
+      else losses -= change;
+    }
+    gains /= period;
+    losses /= period;
+    return {
+      period: period,
+      prevClose: closes[closes.length - 1],
+      gains: gains,
+      losses: losses,
+      value: rsiValue(gains, losses)
+    };
+  }
+
+  function nextRsi(state, close) {
+    if (!state || !Number.isFinite(close)) return state;
+    const change = close - state.prevClose;
+    const period = state.period;
+    const gains = (state.gains * (period - 1) + (change > 0 ? change : 0)) / period;
+    const losses = (state.losses * (period - 1) + (change < 0 ? -change : 0)) / period;
+    return {
+      period: period,
+      prevClose: close,
+      gains: gains,
+      losses: losses,
+      value: rsiValue(gains, losses)
+    };
+  }
+
+  function computeDx(high, low, close, prevHigh, prevLow, prevClose) {
+    const upMove = high - prevHigh;
+    const downMove = prevLow - low;
+    const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0;
+    const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0;
+    const trueRange = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+    return { plusDM: plusDM, minusDM: minusDM, trueRange: trueRange };
+  }
+
+  function diAndDx(sp, sm, st) {
+    const plusDI = st === 0 ? 0 : (100 * sp) / st;
+    const minusDI = st === 0 ? 0 : (100 * sm) / st;
+    const sum = plusDI + minusDI;
+    const dx = sum === 0 ? 0 : (100 * Math.abs(plusDI - minusDI)) / sum;
+    return { plusDI: plusDI, minusDI: minusDI, dx: dx };
   }
 
   function adx(highs, lows, closes, period) {
@@ -158,15 +218,10 @@
     const trueRange = nulls(n);
 
     for (let i = 1; i < n; i++) {
-      const upMove = highs[i] - highs[i - 1];
-      const downMove = lows[i - 1] - lows[i];
-      plusDM[i] = (upMove > downMove && upMove > 0) ? upMove : 0;
-      minusDM[i] = (downMove > upMove && downMove > 0) ? downMove : 0;
-      trueRange[i] = Math.max(
-        highs[i] - lows[i],
-        Math.abs(highs[i] - closes[i - 1]),
-        Math.abs(lows[i] - closes[i - 1])
-      );
+      const d = computeDx(highs[i], lows[i], closes[i], highs[i - 1], lows[i - 1], closes[i - 1]);
+      plusDM[i] = d.plusDM;
+      minusDM[i] = d.minusDM;
+      trueRange[i] = d.trueRange;
     }
 
     const smoothedPlus = rma(plusDM, period);
@@ -178,53 +233,95 @@
     const dx = nulls(n);
 
     for (let i = 0; i < n; i++) {
-      const sp = smoothedPlus[i];
-      const sm = smoothedMinus[i];
-      const st = smoothedTr[i];
-      if (sp == null || sm == null || st == null) continue;
-      if (!Number.isFinite(sp) || !Number.isFinite(sm) || !Number.isFinite(st)) continue;
-      plusDI[i] = st === 0 ? 0 : (100 * sp) / st;
-      minusDI[i] = st === 0 ? 0 : (100 * sm) / st;
-      const sum = plusDI[i] + minusDI[i];
-      dx[i] = sum === 0 ? 0 : (100 * Math.abs(plusDI[i] - minusDI[i])) / sum;
+      if (smoothedTr[i] == null || smoothedPlus[i] == null || smoothedMinus[i] == null) continue;
+      const r = diAndDx(smoothedPlus[i], smoothedMinus[i], smoothedTr[i]);
+      plusDI[i] = r.plusDI;
+      minusDI[i] = r.minusDI;
+      dx[i] = r.dx;
     }
 
     return {
       adx: rma(dx, period),
       plusDI: plusDI,
-      minusDI: minusDI,
-      dx: dx
+      minusDI: minusDI
     };
   }
 
-  function vwap(bars, resetHourUtc) {
-    const n = bars.length;
-    const out = nulls(n);
-    if (!n) return out;
-    const resetHour = resetHourUtc != null ? resetHourUtc : 0;
+  function initAdxState(highs, lows, closes, period) {
+    period = period || 14;
+    if (!closes || closes.length < period * 2 + 1) return null;
 
-    let cumPV = 0;
-    let cumV = 0;
-    let currentSession = null;
+    let sumPlus = 0;
+    let sumMinus = 0;
+    let sumTr = 0;
 
-    for (let i = 0; i < n; i++) {
-      const b = bars[i];
-      const d = new Date(b.t);
-      const sessionKey = Math.floor((b.t - resetHour * 3600000) / 86400000);
-
-      if (sessionKey !== currentSession) {
-        cumPV = 0;
-        cumV = 0;
-        currentSession = sessionKey;
-      }
-
-      const tp = (b.h + b.l + b.c) / 3;
-      const vol = Number.isFinite(b.v) && b.v > 0 ? b.v : 0;
-      cumPV += tp * vol;
-      cumV += vol;
-      out[i] = cumV > 0 ? cumPV / cumV : null;
+    for (let i = 1; i <= period; i++) {
+      const d = computeDx(highs[i], lows[i], closes[i], highs[i - 1], lows[i - 1], closes[i - 1]);
+      sumPlus += d.plusDM;
+      sumMinus += d.minusDM;
+      sumTr += d.trueRange;
     }
-    return out;
+
+    let smoothPlus = sumPlus / period;
+    let smoothMinus = sumMinus / period;
+    let smoothTr = sumTr / period;
+
+    let first = diAndDx(smoothPlus, smoothMinus, smoothTr);
+    let dxSum = first.dx;
+    let idx = period + 1;
+
+    while (idx < period * 2 + 1 && idx < closes.length) {
+      const d = computeDx(highs[idx], lows[idx], closes[idx], highs[idx - 1], lows[idx - 1], closes[idx - 1]);
+      smoothPlus = updateRma(smoothPlus, d.plusDM, period);
+      smoothMinus = updateRma(smoothMinus, d.minusDM, period);
+      smoothTr = updateRma(smoothTr, d.trueRange, period);
+      const r = diAndDx(smoothPlus, smoothMinus, smoothTr);
+      dxSum += r.dx;
+      idx++;
+    }
+
+    const lastIdx = Math.min(idx, closes.length) - 1;
+    if (lastIdx < period * 2) return null;
+
+    return {
+      period: period,
+      prevHigh: highs[lastIdx],
+      prevLow: lows[lastIdx],
+      prevClose: closes[lastIdx],
+      smoothPlus: smoothPlus,
+      smoothMinus: smoothMinus,
+      smoothTr: smoothTr,
+      adx: dxSum / period,
+      plusDI: first.plusDI,
+      minusDI: first.minusDI
+    };
+  }
+
+  function nextAdx(state, high, low, close) {
+    if (!state) return state;
+    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return state;
+
+    const d = computeDx(high, low, close, state.prevHigh, state.prevLow, state.prevClose);
+    const period = state.period;
+    const smoothPlus = updateRma(state.smoothPlus, d.plusDM, period);
+    const smoothMinus = updateRma(state.smoothMinus, d.minusDM, period);
+    const smoothTr = updateRma(state.smoothTr, d.trueRange, period);
+
+    const r = diAndDx(smoothPlus, smoothMinus, smoothTr);
+    const adxVal = updateRma(state.adx, r.dx, period);
+
+    return {
+      period: period,
+      prevHigh: high,
+      prevLow: low,
+      prevClose: close,
+      smoothPlus: smoothPlus,
+      smoothMinus: smoothMinus,
+      smoothTr: smoothTr,
+      adx: adxVal,
+      plusDI: r.plusDI,
+      minusDI: r.minusDI
+    };
   }
 
   return {
@@ -236,10 +333,17 @@
     rma: rma,
     updateEma: updateEma,
     updateRma: updateRma,
+    initEmaState: initEmaState,
+    nextEma: nextEma,
+    initRmaState: initRmaState,
+    nextRma: nextRma,
     tr: tr,
     atr: atr,
     rsi: rsi,
+    initRsiState: initRsiState,
+    nextRsi: nextRsi,
     adx: adx,
-    vwap: vwap
+    initAdxState: initAdxState,
+    nextAdx: nextAdx
   };
 }));
