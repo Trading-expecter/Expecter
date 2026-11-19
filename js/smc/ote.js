@@ -10,6 +10,8 @@ window.AT.smc.ote = (function () {
   const DEFAULT_SWING_RECENCY = 25;
   const DEFAULT_MIN_SWING_ATR_MULT = 4;
   const DEFAULT_MAX_SWING_AGE = 200;
+  const DEFAULT_SWING_BODY_RATIO_MIN = 0.5;
+  const DEFAULT_MITIGATION_CLOSE_ONLY = true;
 
   function cfg() {
     return (window.AT_CONFIG && window.AT_CONFIG.smc) || {};
@@ -37,6 +39,22 @@ window.AT.smc.ote = (function () {
 
   function maxSwingAge() {
     return cfg().maxSwingAge != null ? cfg().maxSwingAge : DEFAULT_MAX_SWING_AGE;
+  }
+
+  function swingBodyRatioMin() {
+    return cfg().swingBodyRatioMin != null ? cfg().swingBodyRatioMin : DEFAULT_SWING_BODY_RATIO_MIN;
+  }
+
+  function requireBosForOte() {
+    return cfg().requireBosForOte === true;
+  }
+
+  function requirePremiumDiscount() {
+    return cfg().requirePremiumDiscount === true;
+  }
+
+  function mitigationCloseOnly() {
+    return cfg().oteMitigationCloseOnly !== false ? cfg().oteMitigationCloseOnly : DEFAULT_MITIGATION_CLOSE_ONLY;
   }
 
   function resolveAtr(atr) {
@@ -70,6 +88,34 @@ window.AT.smc.ote = (function () {
     return best;
   }
 
+  function bodyRatio(bar) {
+    if (!bar) return 0;
+    const range = bar.h - bar.l;
+    if (!(range > 0)) return 0;
+    return Math.abs(bar.c - bar.o) / range;
+  }
+
+  function passesSwingQuality(bars, swingEndPivot) {
+    const bar = bars[swingEndPivot.index];
+    if (!bar) return false;
+    return bodyRatio(bar) >= swingBodyRatioMin();
+  }
+
+  function passesBosGate(mss, direction) {
+    if (!requireBosForOte()) return true;
+    if (!mss || mss.direction !== direction) return false;
+    return true;
+  }
+
+  function passesPremiumDiscountGate(swingStart, swingEnd, direction) {
+    if (!requirePremiumDiscount()) return true;
+    const range = Math.abs(swingEnd - swingStart);
+    if (!(range > 0)) return true;
+    const mid = (swingEnd + swingStart) / 2;
+    if (direction === 1) return swingStart < mid;
+    return swingStart > mid;
+  }
+
   function findSwing(bars, pivots, direction, atr, opts) {
     opts = opts || {};
     if (!bars || bars.length < 10) return null;
@@ -84,51 +130,60 @@ window.AT.smc.ote = (function () {
     const recency = opts.swingRecency != null ? opts.swingRecency : swingRecency();
     const minMult = opts.minSwingAtrMult != null ? opts.minSwingAtrMult : minSwingAtrMult();
     const maxAge = opts.maxSwingAge != null ? opts.maxSwingAge : maxSwingAge();
-
     const recentStart = Math.max(0, lastIdx - recency);
 
+    let swingStart = null;
+    let swingEnd = null;
+    let swingSize = 0;
+
     if (direction === 1) {
-      const swingEnd = findExtremeHigh(pivots, recentStart, lastIdx);
+      swingEnd = findExtremeHigh(pivots, recentStart, lastIdx);
       if (!swingEnd) return null;
       const ageBars = lastIdx - swingEnd.index;
       if (ageBars > recency) return null;
+      if (!passesSwingQuality(bars, swingEnd)) return null;
 
       const lowSearchStart = Math.max(0, swingEnd.index - maxAge);
-      const swingStart = findExtremeLow(pivots, lowSearchStart, swingEnd.index - 1);
+      swingStart = findExtremeLow(pivots, lowSearchStart, swingEnd.index - 1);
       if (!swingStart) return null;
 
-      const swingSize = swingEnd.price - swingStart.price;
+      swingSize = swingEnd.price - swingStart.price;
       if (swingSize < minMult * atrVal) return null;
+      if (!passesPremiumDiscountGate(swingStart.price, swingEnd.price, 1)) return null;
 
       return {
         direction: 1,
-        swingStart: swingStart,
-        swingEnd: swingEnd,
-        swingSize: swingSize,
+        swingStart,
+        swingEnd,
+        swingSize,
         swingSizeAtr: swingSize / atrVal,
-        ageBars: ageBars
+        ageBars,
+        bodyRatio: bodyRatio(bars[swingEnd.index])
       };
     }
 
-    const swingEnd = findExtremeLow(pivots, recentStart, lastIdx);
+    swingEnd = findExtremeLow(pivots, recentStart, lastIdx);
     if (!swingEnd) return null;
     const ageBars = lastIdx - swingEnd.index;
     if (ageBars > recency) return null;
+    if (!passesSwingQuality(bars, swingEnd)) return null;
 
     const highSearchStart = Math.max(0, swingEnd.index - maxAge);
-    const swingStart = findExtremeHigh(pivots, highSearchStart, swingEnd.index - 1);
+    swingStart = findExtremeHigh(pivots, highSearchStart, swingEnd.index - 1);
     if (!swingStart) return null;
 
-    const swingSize = swingStart.price - swingEnd.price;
+    swingSize = swingStart.price - swingEnd.price;
     if (swingSize < minMult * atrVal) return null;
+    if (!passesPremiumDiscountGate(swingStart.price, swingEnd.price, -1)) return null;
 
     return {
       direction: -1,
-      swingStart: swingStart,
-      swingEnd: swingEnd,
-      swingSize: swingSize,
+      swingStart,
+      swingEnd,
+      swingSize,
       swingSizeAtr: swingSize / atrVal,
-      ageBars: ageBars
+      ageBars,
+      bodyRatio: bodyRatio(bars[swingEnd.index])
     };
   }
 
@@ -145,8 +200,9 @@ window.AT.smc.ote = (function () {
     return 'pending';
   }
 
-  function buildOTE(swingStart, swingEnd, direction, swingStartIdx, swingEndIdx, ageBars, swingSizeAtr, currentPrice) {
-    const range = Math.abs(swingEnd - swingStart);
+  function buildOTE(swing, currentPrice) {
+    const { swingStart, swingEnd, direction } = swing;
+    const range = Math.abs(swingEnd.price - swingStart.price);
     if (!(range > 0)) return null;
 
     const min = oteMin();
@@ -155,18 +211,18 @@ window.AT.smc.ote = (function () {
 
     let top, bottom, midLevel;
     if (direction === 1) {
-      top = swingEnd - range * min;
-      bottom = swingEnd - range * max;
-      midLevel = swingEnd - range * mid;
+      top = swingEnd.price - range * min;
+      bottom = swingEnd.price - range * max;
+      midLevel = swingEnd.price - range * mid;
     } else {
-      bottom = swingEnd + range * min;
-      top = swingEnd + range * max;
-      midLevel = swingEnd + range * mid;
+      bottom = swingEnd.price + range * min;
+      top = swingEnd.price + range * max;
+      midLevel = swingEnd.price + range * mid;
     }
 
     const finalTop = Math.max(top, bottom);
     const finalBottom = Math.min(top, bottom);
-    const state = stateFor(direction, currentPrice, swingStart, finalTop, finalBottom);
+    const state = stateFor(direction, currentPrice, swingStart.price, finalTop, finalBottom);
     const zoneWidth = finalTop - finalBottom;
     const deviation = zoneWidth > 0 ? (currentPrice - midLevel) / zoneWidth : 0;
 
@@ -174,41 +230,40 @@ window.AT.smc.ote = (function () {
       top: finalTop,
       bottom: finalBottom,
       mid: midLevel,
-      direction: direction,
-      swingStart: swingStart,
-      swingEnd: swingEnd,
-      swingStartIndex: swingStartIdx,
-      swingEndIndex: swingEndIdx,
-      ageBars: ageBars,
-      swingSizeAtr: swingSizeAtr,
-      state: state,
-      currentPrice: currentPrice,
-      deviation: deviation
+      direction,
+      swingStart: swingStart.price,
+      swingEnd: swingEnd.price,
+      swingStartIndex: swingStart.index,
+      swingEndIndex: swingEnd.index,
+      ageBars: swing.ageBars,
+      swingSizeAtr: swing.swingSizeAtr,
+      bodyRatio: swing.bodyRatio,
+      state,
+      currentPrice,
+      deviation,
+      mitigated: state === 'failed' || (mitigationCloseOnly() && state === 'failed'),
+      mitigationCloseOnly: mitigationCloseOnly()
     };
   }
 
   function calculateOTE(bars, pivots, direction, atr, opts) {
-    if (!bars || !bars.length) return null;
-    if (direction !== 1 && direction !== -1) return null;
+    opts = opts || {};
+    if (!bars || bars.length < 2) return null;
+
     const swing = findSwing(bars, pivots, direction, atr, opts);
     if (!swing) return null;
 
-    const currentPrice = bars[bars.length - 1].c;
+    if (opts.mss && !passesBosGate(opts.mss, direction)) {
+      return null;
+    }
 
-    return buildOTE(
-      swing.swingStart.price,
-      swing.swingEnd.price,
-      swing.direction,
-      swing.swingStart.index,
-      swing.swingEnd.index,
-      swing.ageBars,
-      swing.swingSizeAtr,
-      currentPrice
-    );
+    const currentPrice = bars[bars.length - 1].c;
+    return buildOTE(swing, currentPrice);
   }
 
   return {
-    calculateOTE: calculateOTE,
-    findSwing: findSwing
+    calculateOTE,
+    findSwing,
+    bodyRatio
   };
 })();

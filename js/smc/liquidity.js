@@ -6,10 +6,11 @@ window.AT.smc.liquidity = (function () {
 
   const DEFAULT_SWEEP_MIN_ATR_MULT = 0.35;
   const DEFAULT_SWEEP_MAX_ATR_MULT = 1.8;
-  const DEFAULT_SWEEP_WINDOW = 4;
+  const DEFAULT_SWEEP_WINDOW = 5;
   const DEFAULT_SWEEP_REJECTION_MIN = 0.5;
   const DEFAULT_EQ_TOLERANCE_ATR_MULT = 0.10;
   const DEFAULT_LOOKBACK_PIVOTS = 5;
+  const DEFAULT_MIN_RANGE_ATR_MULT = 0.6;
 
   function cfg() {
     return (window.AT_CONFIG && window.AT_CONFIG.smc) || {};
@@ -35,6 +36,10 @@ window.AT.smc.liquidity = (function () {
     return cfg().eqToleranceAtrMult != null ? cfg().eqToleranceAtrMult : DEFAULT_EQ_TOLERANCE_ATR_MULT;
   }
 
+  function minRangeAtrMult() {
+    return cfg().sweepMinRangeAtrMult != null ? cfg().sweepMinRangeAtrMult : DEFAULT_MIN_RANGE_ATR_MULT;
+  }
+
   function resolveAtr(atr) {
     if (atr == null) return 0;
     if (typeof atr === 'number') return Number.isFinite(atr) ? atr : 0;
@@ -54,34 +59,47 @@ window.AT.smc.liquidity = (function () {
       : (bar.h - bar.c) / range;
   }
 
-  function isSweepInvalidated(bars, sweepIdx, pivotPrice, direction) {
-    for (let i = sweepIdx + 1; i < bars.length; i++) {
-      const b = bars[i];
-      if (direction === 1 && b.c < pivotPrice) return true;
-      if (direction === -1 && b.c > pivotPrice) return true;
-    }
-    return false;
+  function candleRangeAtr(bar, atr) {
+    if (!(atr > 0)) return 0;
+    return (bar.h - bar.l) / atr;
   }
 
-  function detectBullishSweep(bars, pivot, atr, opts) {
+  function detectSweep(bars, pivot, atr, direction, opts) {
     const minPenetration = atr * (opts.minPenetration != null ? opts.minPenetration : sweepMinMult());
     const maxPenetration = atr * (opts.maxPenetration != null ? opts.maxPenetration : sweepMaxMult());
     const window = opts.window != null ? opts.window : sweepWindowDefault();
     const rejectionMin = opts.rejectionMin != null ? opts.rejectionMin : sweepRejectionMin();
+    const minRangeAtr = opts.minRangeAtr != null ? opts.minRangeAtr : minRangeAtrMult();
+
     const lastIdx = bars.length - 1;
     const startIdx = Math.max(pivot.index + 1, lastIdx - window + 1);
 
     for (let i = lastIdx; i >= startIdx; i--) {
       const bar = bars[i];
-      const penetration = pivot.price - bar.l;
+
+      let penetration;
+      let closeOk;
+
+      if (direction === 1) {
+        penetration = pivot.price - bar.l;
+        closeOk = bar.c > pivot.price;
+      } else {
+        penetration = bar.h - pivot.price;
+        closeOk = bar.c < pivot.price;
+      }
+
       if (penetration < minPenetration) continue;
       if (penetration > maxPenetration) continue;
-      if (bar.c <= pivot.price) continue;
-      const rej = rejectionRatio(bar, 1);
+      if (!closeOk) continue;
+
+      const rej = rejectionRatio(bar, direction);
       if (rej < rejectionMin) continue;
-      if (isSweepInvalidated(bars, i, pivot.price, 1)) continue;
+
+      const rangeAtr = candleRangeAtr(bar, atr);
+      if (rangeAtr < minRangeAtr) continue;
+
       return {
-        direction: 1,
+        direction: direction,
         level: pivot.price,
         index: i,
         pivotIndex: pivot.index,
@@ -89,43 +107,12 @@ window.AT.smc.liquidity = (function () {
         penetration: penetration,
         penetrationAtr: atr > 0 ? penetration / atr : 0,
         rejectionRatio: rej,
-        type: 'Bullish_Sweep',
-        invalidated: false
+        rangeAtr: rangeAtr,
+        type: direction === 1 ? 'Bullish_Sweep' : 'Bearish_Sweep',
+        valid: true
       };
     }
-    return null;
-  }
 
-  function detectBearishSweep(bars, pivot, atr, opts) {
-    const minPenetration = atr * (opts.minPenetration != null ? opts.minPenetration : sweepMinMult());
-    const maxPenetration = atr * (opts.maxPenetration != null ? opts.maxPenetration : sweepMaxMult());
-    const window = opts.window != null ? opts.window : sweepWindowDefault();
-    const rejectionMin = opts.rejectionMin != null ? opts.rejectionMin : sweepRejectionMin();
-    const lastIdx = bars.length - 1;
-    const startIdx = Math.max(pivot.index + 1, lastIdx - window + 1);
-
-    for (let i = lastIdx; i >= startIdx; i--) {
-      const bar = bars[i];
-      const penetration = bar.h - pivot.price;
-      if (penetration < minPenetration) continue;
-      if (penetration > maxPenetration) continue;
-      if (bar.c >= pivot.price) continue;
-      const rej = rejectionRatio(bar, -1);
-      if (rej < rejectionMin) continue;
-      if (isSweepInvalidated(bars, i, pivot.price, -1)) continue;
-      return {
-        direction: -1,
-        level: pivot.price,
-        index: i,
-        pivotIndex: pivot.index,
-        barsSince: lastIdx - i,
-        penetration: penetration,
-        penetrationAtr: atr > 0 ? penetration / atr : 0,
-        rejectionRatio: rej,
-        type: 'Bearish_Sweep',
-        invalidated: false
-      };
-    }
     return null;
   }
 
@@ -148,7 +135,7 @@ window.AT.smc.liquidity = (function () {
       for (let i = pivots.lows.length - 1; i >= start; i--) {
         const pivot = pivots.lows[i];
         if (pivot.index >= bars.length - 1) continue;
-        const sweep = detectBullishSweep(bars, pivot, atrVal, opts);
+        const sweep = detectSweep(bars, pivot, atrVal, 1, opts);
         if (sweep) { sweeps.push(sweep); break; }
       }
     }
@@ -158,7 +145,7 @@ window.AT.smc.liquidity = (function () {
       for (let i = pivots.highs.length - 1; i >= start; i--) {
         const pivot = pivots.highs[i];
         if (pivot.index >= bars.length - 1) continue;
-        const sweep = detectBearishSweep(bars, pivot, atrVal, opts);
+        const sweep = detectSweep(bars, pivot, atrVal, -1, opts);
         if (sweep) { sweeps.push(sweep); break; }
       }
     }
@@ -169,17 +156,12 @@ window.AT.smc.liquidity = (function () {
 
   function findEqualLevels(pivots, atr, opts) {
     opts = opts || {};
-    const atrVal = resolveAtr(atr);
-    const tolerance = atrVal * (opts.toleranceMult != null ? opts.toleranceMult : eqToleranceDefault());
-    const result = {
-      highs: [],
-      lows: [],
-      tolerance: tolerance,
-      toleranceAtr: atrVal > 0 ? tolerance / atrVal : 0
-    };
+    const tolerance = resolveAtr(atr) * (opts.toleranceMult != null ? opts.toleranceMult : eqToleranceDefault());
+    const result = { highs: [], lows: [] };
     if (!(tolerance > 0) || !pivots) return result;
 
     function group(list) {
+      if (!list || !list.length) return [];
       const groups = [];
       for (let i = 0; i < list.length; i++) {
         const p = list[i];
@@ -201,16 +183,16 @@ window.AT.smc.liquidity = (function () {
       return groups.filter(function (g) { return g.count >= 2; });
     }
 
-    if (pivots.highs && pivots.highs.length) result.highs = group(pivots.highs);
-    if (pivots.lows && pivots.lows.length) result.lows = group(pivots.lows);
+    result.highs = group(pivots.highs);
+    result.lows = group(pivots.lows);
     return result;
   }
 
   return {
-    detectSweeps: detectSweeps,
-    findEqualLevels: findEqualLevels,
-    sweepMinMult: sweepMinMult,
-    sweepMaxMult: sweepMaxMult,
-    sweepRejectionMin: sweepRejectionMin
+    detectSweeps,
+    findEqualLevels,
+    sweepMinMult,
+    sweepMaxMult,
+    sweepRejectionMin
   };
 })();
