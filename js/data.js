@@ -152,12 +152,23 @@
     return getJSON('/api/latest?' + q, null, 1, signal).then(parseLatest);
   }
 
+  // -----------------------------------------------------------------
+  // pool(): ejecuta tareas respetando feed.maxConcurrent (por defecto 1)
+  // -----------------------------------------------------------------
   function pool(tasks, limit, globalTimeoutMs) {
     if (!tasks || !tasks.length) return Promise.resolve([]);
     const results = new Array(tasks.length);
     let next = 0;
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const signal = ctl ? ctl.signal : null;
+
+    // Forzamos concurrencia 1 por defecto (configurable via limit o feed.maxConcurrent)
+    const cfgLimit = feedCfg().maxConcurrent;
+    const effectiveLimit = Math.max(1, Math.min(
+      (typeof limit === 'number' && limit > 0) ? limit : 1,
+      (typeof cfgLimit === 'number' && cfgLimit > 0) ? cfgLimit : 1,
+      tasks.length
+    ));
 
     function worker() {
       if (next >= tasks.length || (signal && signal.aborted)) return Promise.resolve();
@@ -172,7 +183,7 @@
     }
 
     const workers = [];
-    for (let i = 0; i < Math.min(limit || 4, tasks.length); i++) workers.push(worker());
+    for (let i = 0; i < effectiveLimit; i++) workers.push(worker());
     const run = Promise.all(workers).then(function () { return results; });
 
     if (!globalTimeoutMs) return run;

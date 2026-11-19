@@ -11,6 +11,9 @@
   const UPDATE_INTERVAL_MS = TIM.updateIntervalMs || 1000;
   const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
   const MAX_SIGNAL_LOG = 500;
+  const BAR_LIMIT = 150;                // Velas por timeframe (bajado de 300)
+  const LOAD_RETRIES = 2;               // Reintentos por TF
+  const RETRY_DELAY_MS = 1000;          // Espera entre reintentos
 
   const state = {
     symbol: 'XAUUSD',
@@ -34,13 +37,7 @@
     cycleErrorCount: 0
   };
 
-  const loop = {
-    masterId: 0,
-    priceId: 0,
-    locked: false,
-    stopped: true
-  };
-
+  const loop = { masterId: 0, priceId: 0, locked: false, stopped: true };
   let chart = null;
   let feed = null;
   let fsAbort = null;
@@ -438,9 +435,8 @@
     if (state.gapRefill[tf]) return;
     state.gapRefill[tf] = true;
     const myId = state.requestId;
-    
-    // Pedimos 300 en lugar de 1000
-    D.fetchBars(state.symbol, tf, 300).then(function (bars) {
+
+    D.fetchBars(state.symbol, tf, BAR_LIMIT).then(function (bars) {
       if (state.requestId !== myId || !bars || !bars.length) return;
       state.bars[tf] = bars;
       if (chart && state.tf === tf) {
@@ -483,8 +479,7 @@
       const entryTf = res.entryTf || state.tf;
       const raw = state.bars[entryTf];
       const minBars = (CFG.analysis && CFG.analysis.minBarsPerTf) || 30;
-      
-      // Validación con 30 velas mínimas
+
       if (raw && raw.length >= minBars) {
         const useClosed = (CFG.analysis && CFG.analysis.useClosedCandlesOnly) !== false;
         const closed = (useClosed && raw.length > 1) ? raw.slice(0, -1) : raw;
@@ -550,40 +545,58 @@
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; rafPending = false; }
   }
 
-  function loadAllBars() {
+  // -----------------------------------------------------------------
+  // CARGA SECUENCIAL CON REINTENTOS (evita 429 / cortes de la API)
+  // -----------------------------------------------------------------
+  function delay(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  async function loadAllBars() {
     state.loading = true;
     state.requestId++;
     const myId = state.requestId;
     const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
 
-    const tasks = tfs.map(function (tf) {
-      // Pedimos 300 en lugar de 1000
-      return function (signal) { return D.fetchBars(state.symbol, tf, 300, signal); };
-    });
+    // Limpieza antes de empezar (evita mezclar con datos del símbolo anterior)
+    state.bars = {};
 
-    return D.pool(tasks, 3, CFG.feed.globalTimeout || 20000).then(function (results) {
+    for (let i = 0; i < tfs.length; i++) {
       if (state.requestId !== myId) return null;
-      state.bars = {};
-      results.forEach(function (r, i) { if (r && r.ok) state.bars[tfs[i]] = r.v; });
-      state.loading = false;
-      runAnalysisStep();
-      renderAll(true);
-      return results;
-    }).catch(function (err) {
-      if (state.requestId !== myId) return null;
-      state.loading = false;
-      const partial = err && err.partial;
-      if (partial && Array.isArray(partial) && partial.length === tfs.length) {
-        state.bars = {};
-        partial.forEach(function (r, i) { if (r && r.ok) state.bars[tfs[i]] = r.v; });
-        runAnalysisStep();
-        renderAll(true);
-        return partial;
+      const tf = tfs[i];
+      let success = false;
+      let attempts = 0;
+
+      while (!success && attempts <= LOAD_RETRIES) {
+        if (state.requestId !== myId) return null;
+        try {
+          const bars = await D.fetchBars(state.symbol, tf, BAR_LIMIT);
+          if (bars && bars.length > 0) {
+            state.bars[tf] = bars;
+            success = true;
+          } else {
+            attempts++;
+          }
+        } catch (e) {
+          attempts++;
+          console.warn('[app] Fallo cargando ' + tf + ' (intento ' + attempts + '/' + (LOAD_RETRIES + 1) + '):', e && e.message);
+          if (attempts <= LOAD_RETRIES) await delay(RETRY_DELAY_MS);
+        }
       }
-      console.error('[app] loadAllBars:', err && (err.message || err));
-      renderAll(true);
-      return null;
-    });
+
+      if (!success) {
+        console.warn('[app] TF ' + tf + ' descartado tras ' + (LOAD_RETRIES + 1) + ' intentos');
+      }
+
+      // Pequeña pausa entre TF para no saturar (aunque ya es secuencial)
+      if (i < tfs.length - 1) await delay(150);
+    }
+
+    if (state.requestId !== myId) return null;
+    state.loading = false;
+    runAnalysisStep();
+    renderAll(true);
+    return state.bars;
   }
 
   function selectSymbol(sym) {
