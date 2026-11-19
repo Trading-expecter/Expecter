@@ -408,8 +408,24 @@
 
     function resize() { schedule(); }
 
-    function addZoneToRange(zone, bounds) {
+    /**
+     * Expande los bounds verticales con una zona (OB/FVG/OTE) SOLO si esa zona
+     * va a ser efectivamente dibujada en el rango visible.
+     *
+     * `drawZone()` descarta zonas cuyo `index >= r.end` (empiezan después del
+     * borde derecho). Si dejáramos que esas zonas expandieran los bounds,
+     * el gráfico se comprimiría sin que el usuario viera nada útil.
+     *
+     * Las zonas con `index < r.start` SÍ se dibujan (extendidas desde el borde
+     * izquierdo con `xStart = PAD.l`), así que sí deben expandir el eje Y para
+     * que se muestren completas.
+     *
+     * OTE no tiene `.index` (usa swingStartIndex/swingEndIndex), por lo que
+     * siempre se considera visible y expande normalmente.
+     */
+    function addZoneToRange(zone, bounds, r) {
       if (!isValidZone(zone)) return;
+      if (r && zone.index != null && zone.index >= r.end) return;
       if (zone.top > bounds.hi) bounds.hi = zone.top;
       if (zone.bottom < bounds.lo) bounds.lo = zone.bottom;
     }
@@ -421,9 +437,9 @@
         if (b.l < bounds.lo) bounds.lo = b.l;
         if (b.h > bounds.hi) bounds.hi = b.h;
       }
-      addZoneToRange(st.zones.ob, bounds);
-      addZoneToRange(st.zones.fvg, bounds);
-      addZoneToRange(st.zones.ote, bounds);
+      addZoneToRange(st.zones.ob, bounds, r);
+      addZoneToRange(st.zones.fvg, bounds, r);
+      addZoneToRange(st.zones.ote, bounds, r);
       if (!Number.isFinite(bounds.lo) || !Number.isFinite(bounds.hi)) { bounds.lo = 0; bounds.hi = 1; }
       const pad = (bounds.hi - bounds.lo) * 0.1 || 1;
       bounds.lo -= pad;

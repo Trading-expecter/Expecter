@@ -5,6 +5,7 @@
   const D = AT.data;
   const A = AT.analysis;
   const SMC = AT.smcEngine;
+  const J = AT.journal;
   const CFG = window.AT_CONFIG;
   const TIM = (CFG && CFG.timings) || {};
 
@@ -12,6 +13,9 @@
   const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
   const MAX_SIGNAL_LOG = 500;
   const BAR_LIMIT = 300;
+  const SNAPSHOT_BARS_ENTRY = 200;
+  const SNAPSHOT_BARS_HTF = 50;
+  const OUTCOME_UPDATE_THROTTLE_MS = 15000;
 
   const state = {
     symbol: 'XAUUSD',
@@ -31,6 +35,7 @@
     lastRenderHash: '',
     lastAnalysisAt: 0,
     lastPriceCheckAt: 0,
+    lastOutcomeUpdateAt: 0,
     cycleSkipCount: 0,
     cycleErrorCount: 0
   };
@@ -62,6 +67,13 @@
   }
 
   function num(v) { return v != null && Number.isFinite(v); }
+
+  function setText(id, text, className) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    if (className !== undefined) el.className = className;
+  }
 
   function needleAngle(score, dir) {
     if (dir === 0 || dir == null) return 0;
@@ -151,7 +163,11 @@
     }
 
     needle.style.opacity = '1';
-    needle.setAttribute('transform', 'rotate(' + needleAngle(a.consensusScore, a.overallDirection).toFixed(1) + ' 100 100)');
+    if (needle.hasAttribute('transform')) needle.removeAttribute('transform');
+    needle.style.transformBox = 'view-box';
+    needle.style.transformOrigin = '100px 100px';
+    needle.style.transform = 'rotate(' + needleAngle(a.consensusScore, a.overallDirection).toFixed(1) + 'deg)';
+
     label.textContent = a.consensusText;
     label.className = 'gauge-label ' + a.consensusLabel;
 
@@ -323,16 +339,6 @@
       sEl.textContent = txt;
       sEl.className = cls;
     }
-
-    const mtfEl = $('multiTfSummary');
-    if (mtfEl && a.multiTfSignal) {
-      const s = a.multiTfSignal;
-      let color = 'var(--text-dim)';
-      if (s.action === 'buy') color = s.strength === 'strong' ? 'var(--up)' : 'var(--warn)';
-      else if (s.action === 'sell') color = s.strength === 'strong' ? 'var(--down)' : 'var(--warn)';
-      mtfEl.textContent = s.summary;
-      mtfEl.style.color = color;
-    }
   }
 
   function renderMtf() {
@@ -439,7 +445,11 @@
 
   function renderAll(force) {
     const hash = computeRenderHash();
-    if (!force && hash === state.lastRenderHash) { renderPrice(); return; }
+    if (!force && hash === state.lastRenderHash) {
+      renderPrice();
+      renderChart();
+      return;
+    }
     state.lastRenderHash = hash;
 
     renderStatus();
@@ -467,6 +477,137 @@
       analysis.verdictState,
       Math.round((analysis.consensusScore || 0) / 10)
     ].join('::');
+  }
+
+  function cleanBarsForSnapshot(bars) {
+    if (!bars || !bars.length) return [];
+    const useClosed = (CFG.analysis && CFG.analysis.useClosedCandlesOnly) !== false;
+    const src = (useClosed && bars.length > 1) ? bars.slice(0, -1) : bars;
+    return src.map(function (b) {
+      return { t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v || 0 };
+    });
+  }
+
+  function buildSignalSnapshot(analysis, entryPrice) {
+    const t = state.ticks[state.symbol];
+    const entryTf = analysis.entryTf || state.tf;
+    const entryBars = state.bars[entryTf] || [];
+
+    const entrySnapshot = cleanBarsForSnapshot(entryBars).slice(-SNAPSHOT_BARS_ENTRY);
+
+    const higherTfs = {};
+    ['1h', '4h', '1d'].forEach(function (tf) {
+      if (tf === entryTf) return;
+      const barsHtf = state.bars[tf];
+      if (barsHtf && barsHtf.length) {
+        higherTfs[tf] = cleanBarsForSnapshot(barsHtf).slice(-SNAPSHOT_BARS_HTF);
+      }
+    });
+
+    const perTfSnap = {};
+    Object.keys(analysis.perTf || {}).forEach(function (tf) {
+      const d = analysis.perTf[tf];
+      perTfSnap[tf] = {
+        direction: d.direction,
+        adx: d.adx,
+        adxStrong: d.adxStrong,
+        rsi: d.rsi,
+        emaSepPct: d.emaSepPct,
+        returnPct: d.returnPct,
+        regimeValid: d.regimeValid,
+        price: d.price,
+        fast: d.fast,
+        slow: d.slow,
+        plusDI: d.plusDI,
+        minusDI: d.minusDI,
+        weight: d.weight,
+        evidence: d.evidence,
+        degraded: d.degraded
+      };
+    });
+
+    const risk = analysis.verdictRisk;
+
+    return {
+      ts: Date.now(),
+      symbol: state.symbol,
+      tf: state.tf,
+      entryTf: entryTf,
+      direction: analysis.overallDirection,
+      action: analysis.overallDirection === 1 ? 'buy' : analysis.overallDirection === -1 ? 'sell' : 'wait',
+
+      verdict: {
+        state: analysis.verdictState,
+        label: analysis.verdictLabel,
+        reason: analysis.verdictReason,
+        score: analysis.consensusScore,
+        confidence: analysis.confidence,
+        consensusScore: analysis.consensusScore,
+        consensusLabel: analysis.consensusLabel
+      },
+
+      multiTfSignal: {
+        action: analysis.multiTfSignal.action,
+        strength: analysis.multiTfSignal.strength,
+        alignment: analysis.multiTfSignal.alignment,
+        votes: analysis.multiTfSignal.votes,
+        summary: analysis.multiTfSignal.summary
+      },
+
+      anticipation: analysis.anticipation ? {
+        type: analysis.anticipation.type,
+        score: analysis.anticipation.score,
+        strength: analysis.anticipation.strength,
+        factors: analysis.anticipation.factors ? analysis.anticipation.factors.slice() : []
+      } : null,
+
+      prices: {
+        bid: t ? t.bid : null,
+        ask: t ? t.ask : null,
+        mid: entryPrice,
+        spread: t ? t.spread : null,
+        entry: entryPrice,
+        stop: risk ? risk.stop : null,
+        target: risk ? risk.target : null,
+        rr: risk ? risk.rr : null
+      },
+
+      smc: state.smcResult ? {
+        score: state.smcResult.score,
+        grade: state.smcResult.grade,
+        trend: state.smcResult.trend,
+        breakdown: state.smcResult.breakdown,
+        vetoes: state.smcResult.vetoes,
+        zones: {
+          ob: state.smcResult.zones ? state.smcResult.zones.ob : null,
+          fvg: state.smcResult.zones ? state.smcResult.zones.fvg : null,
+          ote: state.smcResult.zones ? state.smcResult.zones.ote : null
+        }
+      } : null,
+
+      snapshot: {
+        entryTf: { bars: entrySnapshot },
+        higherTfs: higherTfs,
+        context: {
+          macroTrend: analysis.macroTrend,
+          macroMomentum: analysis.macroMomentum,
+          macroVolatility: analysis.macroVolatility,
+          avgAdxAligned: analysis.avgAdxAligned,
+          avgAdxOpposed: analysis.avgAdxOpposed,
+          sessionLabel: analysis.sessionLabel,
+          marketOpen: analysis.marketOpen,
+          highLiquidity: analysis.highLiquidity,
+          perTf: perTfSnap,
+          levels: {
+            supports: (analysis.levels && analysis.levels.supports ? analysis.levels.supports.slice(0, 5) : []),
+            resistances: (analysis.levels && analysis.levels.resistances ? analysis.levels.resistances.slice(0, 5) : []),
+            bestSupport: analysis.levels ? analysis.levels.bestSupport : null,
+            bestResistance: analysis.levels ? analysis.levels.bestResistance : null
+          },
+          alerts: (analysis.alerts || []).map(function (a) { return { type: a.type, text: a.text }; })
+        }
+      }
+    };
   }
 
   function logSignalIfChanged(analysis) {
@@ -499,6 +640,19 @@
     });
     if (state.signalLog.length > MAX_SIGNAL_LOG) state.signalLog.shift();
 
+    if (J && typeof J.record === 'function') {
+      try {
+        const snap = buildSignalSnapshot(analysis, entryPrice);
+        J.record(snap).then(function () {
+          renderJournal();
+        }).catch(function (e) {
+          console.warn('[app] journal.record falló:', e);
+        });
+      } catch (e) {
+        console.warn('[app] buildSignalSnapshot falló:', e);
+      }
+    }
+
     state.lastSignalKey = key;
     state.lastSignalAt = now;
   }
@@ -521,6 +675,7 @@
     if (state.gapRefill[tf]) return;
     state.gapRefill[tf] = true;
     const myId = state.requestId;
+    const gapRef = state.gapRefill;
 
     D.fetchBars(state.symbol, tf, BAR_LIMIT).then(function (bars) {
       if (state.requestId !== myId || !bars || !bars.length) return;
@@ -529,7 +684,9 @@
         const inst = CFG.symbols[state.symbol];
         if (inst) chart.setData(bars, { tf: state.tf, digits: inst.digits, symbol: state.symbol });
       }
-    }).catch(function () { void 0; }).then(function () { delete state.gapRefill[tf]; });
+    }).catch(function () { void 0; }).then(function () {
+      delete gapRef[tf];
+    });
   }
 
   function processTick(tick) {
@@ -594,6 +751,19 @@
     logSignalIfChanged(res);
   }
 
+  function updateJournalOutcomes() {
+    if (!J || typeof J.updateOutcomes !== 'function') return;
+    const now = Date.now();
+    if (state.lastOutcomeUpdateAt && (now - state.lastOutcomeUpdateAt) < OUTCOME_UPDATE_THROTTLE_MS) return;
+    state.lastOutcomeUpdateAt = now;
+
+    J.updateOutcomes(state.bars, { symbol: state.symbol }).then(function (changed) {
+      if (changed && changed > 0) renderJournal();
+    }).catch(function (e) {
+      console.warn('[app] journal.updateOutcomes falló:', e);
+    });
+  }
+
   function masterCycle() {
     if (loop.locked || loop.stopped) {
       if (loop.locked) state.cycleSkipCount++;
@@ -603,6 +773,8 @@
 
     try { runAnalysisStep(); }
     catch (e) { console.error('[app] masterCycle análisis excepción:', e); }
+
+    updateJournalOutcomes();
 
     scheduleRender();
 
@@ -683,6 +855,7 @@
     state.lastSignalAt = 0;
     state.gapRefill = {};
     state.lastRenderHash = '';
+    state.lastOutcomeUpdateAt = 0;
     delete state.ticks[old];
 
     if (typeof A.invalidateCache === 'function') A.invalidateCache();
@@ -906,6 +1079,97 @@
     });
   }
 
+  function renderJournal() {
+    if (!J) return;
+
+    const storage = $('journalStorage');
+    if (storage) {
+      const fallback = J.isFallback && J.isFallback();
+      storage.textContent = fallback ? 'localStorage' : 'IndexedDB';
+      storage.className = 'journal-storage muted small' + (fallback ? ' fallback' : '');
+    }
+
+    J.stats().then(function (s) {
+      setText('jTotal', String(s.total));
+      setText('jWins', String(s.wins), 'journal-stat-val up');
+      setText('jLosses', String(s.losses), 'journal-stat-val down');
+      setText('jPending', String(s.pending + s.open));
+      setText('jWinRate', s.closed > 0 ? s.winRate.toFixed(1) + '%' : '—');
+      setText('jExpectancy', s.closed > 0 ? (s.expectancyR >= 0 ? '+' : '') + s.expectancyR.toFixed(2) + 'R' : '—');
+      const pf = s.profitFactor;
+      setText('jProfitFactor', !isFinite(pf) ? (pf === Infinity ? '∞' : '—') : pf.toFixed(2));
+    }).catch(function (e) {
+      console.warn('[app] journal.stats falló:', e);
+    });
+  }
+
+  function journalFeedback(msg, kind) {
+    const el = $('journalFeedback');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'journal-feedback small ' + (kind || 'muted');
+    if (el._timer) clearTimeout(el._timer);
+    el._timer = setTimeout(function () {
+      el.textContent = '';
+      el.className = 'journal-feedback muted small';
+    }, 4500);
+  }
+
+  function initJournal() {
+    if (!J) {
+      console.warn('[app] journal no disponible');
+      return;
+    }
+
+    J.init().then(function () {
+      renderJournal();
+
+      const btnJSON = $('journalExportJSON');
+      const btnCSV = $('journalExportCSV');
+      const btnClear = $('journalClear');
+
+      if (btnJSON) {
+        btnJSON.addEventListener('click', function () {
+          btnJSON.disabled = true;
+          J.exportJSON().then(function (n) {
+            journalFeedback(n + ' señales exportadas (JSON)', 'ok');
+          }).catch(function (e) {
+            journalFeedback('Error al exportar', 'bad');
+            console.warn(e);
+          }).then(function () { btnJSON.disabled = false; });
+        });
+      }
+
+      if (btnCSV) {
+        btnCSV.addEventListener('click', function () {
+          btnCSV.disabled = true;
+          J.exportCSV().then(function (n) {
+            journalFeedback(n + ' señales exportadas (CSV)', 'ok');
+          }).catch(function (e) {
+            journalFeedback('Error al exportar', 'bad');
+            console.warn(e);
+          }).then(function () { btnCSV.disabled = false; });
+        });
+      }
+
+      if (btnClear) {
+        btnClear.addEventListener('click', function () {
+          if (!confirm('¿Borrar todo el historial de señales? Esta acción no se puede deshacer.')) return;
+          btnClear.disabled = true;
+          J.clear().then(function () {
+            journalFeedback('Historial borrado', 'ok');
+            renderJournal();
+          }).catch(function (e) {
+            journalFeedback('Error al borrar', 'bad');
+            console.warn(e);
+          }).then(function () { btnClear.disabled = false; });
+        });
+      }
+    }).catch(function (e) {
+      console.error('[app] journal.init falló:', e);
+    });
+  }
+
   function startFeed() {
     feed = D.createFeed(Object.keys(CFG.symbols), {
       tick: onTick,
@@ -970,6 +1234,7 @@
   function init() {
     buildSymbolBar();
     initMtfToggle();
+    initJournal();
 
     try { initChart(); }
     catch (e) { console.error('[app] initChart falló:', e); }
@@ -1014,7 +1279,8 @@
         skips: state.cycleSkipCount,
         errors: state.cycleErrorCount,
         lastAnalysisAt: state.lastAnalysisAt,
-        lastPriceCheckAt: state.lastPriceCheckAt
+        lastPriceCheckAt: state.lastPriceCheckAt,
+        lastOutcomeUpdateAt: state.lastOutcomeUpdateAt
       };
     }
   };
