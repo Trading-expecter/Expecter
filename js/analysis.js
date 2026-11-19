@@ -90,6 +90,21 @@
     return SESSION_LABELS.asian;
   }
 
+  function pickEmaPeriods(nBars, requestedFast, requestedSlow) {
+    const candidates = [requestedSlow, 100, 50, 30];
+    for (let i = 0; i < candidates.length; i++) {
+      const slowP = candidates[i];
+      if (slowP < 10) continue;
+      if (nBars >= slowP + 1) {
+        const ratio = requestedFast / requestedSlow;
+        let fastP = Math.max(10, Math.round(slowP * ratio));
+        if (fastP >= slowP) fastP = Math.max(10, slowP - 5);
+        return { fast: fastP, slow: slowP, degraded: slowP !== requestedSlow };
+      }
+    }
+    return null;
+  }
+
   function analyzeTimeframe(bars) {
     const minBars = (cfg().analysis && cfg().analysis.minBarsPerTf) || 30;
     if (!bars || bars.length < minBars) return null;
@@ -108,15 +123,20 @@
     const adxMin = rCfg.adxMin || 22;
     const adxStrong = rCfg.adxStrong || 28;
 
-    const fast = I.ema(closes, emaFastP);
-    const slow = I.ema(closes, emaSlowP);
+    const periods = pickEmaPeriods(closes.length, emaFastP, emaSlowP);
+    if (!periods) return null;
+
+    const fast = I.ema(closes, periods.fast);
+    const slow = I.ema(closes, periods.slow);
     const adxData = I.adx(highs, lows, closes, adxPeriod);
+    const rsiArr = I.rsi(closes, 14);
 
     const i = bars.length - 1;
     const price = closes[i];
     const f = fast[i];
     const s = slow[i];
     const adxVal = adxData.adx[i];
+    const rsiVal = rsiArr[i];
 
     if (!num(f) || !num(s) || !num(adxVal) || s === 0) return null;
 
@@ -137,6 +157,7 @@
       direction: direction,
       adx: adxVal,
       adxStrong: adxVal >= adxStrong,
+      rsi: rsiVal,
       emaSepPct: emaSepPct,
       returnPct: returnPct,
       regimeValid: regimeValid,
@@ -145,7 +166,8 @@
       slow: s,
       plusDI: adxData.plusDI[i],
       minusDI: adxData.minusDI[i],
-      bars: bars.length
+      bars: bars.length,
+      degraded: periods.degraded
     };
   }
 
@@ -171,31 +193,111 @@
     return result;
   }
 
-  function findNearestLevels(bars, currentPrice, lookback) {
-    lookback = lookback || 3;
+  function findLevelZones(bars, currentPrice, opts) {
+    opts = opts || {};
+    const lookback = opts.lookback || 3;
+    const maxZones = opts.maxZones || 3;
+    const atr = opts.atr || 0;
+    const tolerance = atr > 0 ? atr * 0.5 : 0;
+
     const n = bars ? bars.length : 0;
-    const empty = { support: null, resistance: null };
+    const empty = { supports: [], resistances: [], bestSupport: null, bestResistance: null };
     if (!n || n < lookback * 2 + 2 || !num(currentPrice)) return empty;
 
-    const supports = [];
-    const resistances = [];
-
+    const pivots = [];
     for (let i = lookback; i < n - lookback; i++) {
       const b = bars[i];
-      let isHigh = true;
-      let isLow = true;
+      let isHigh = true, isLow = true;
       for (let j = 1; j <= lookback; j++) {
         if (bars[i - j].h >= b.h || bars[i + j].h >= b.h) isHigh = false;
         if (bars[i - j].l <= b.l || bars[i + j].l <= b.l) isLow = false;
       }
-      if (isHigh) (b.h < currentPrice ? supports : resistances).push(b.h);
-      if (isLow) (b.l < currentPrice ? supports : resistances).push(b.l);
+      if (isHigh) pivots.push({ index: i, price: b.h });
+      if (isLow) pivots.push({ index: i, price: b.l });
     }
 
+    function cluster(points) {
+      if (!points.length) return [];
+      const sorted = points.slice().sort(function (a, b) { return a.price - b.price; });
+      const groups = [];
+      for (let i = 0; i < sorted.length; i++) {
+        const p = sorted[i];
+        let matched = null;
+        for (let g = 0; g < groups.length; g++) {
+          const tol = tolerance || (groups[g].avgPrice * 0.001);
+          if (Math.abs(groups[g].avgPrice - p.price) <= tol) { matched = groups[g]; break; }
+        }
+        if (matched) {
+          matched.prices.push(p.price);
+          matched.indices.push(p.index);
+          matched.count++;
+          matched.top = Math.max(matched.top, p.price);
+          matched.bottom = Math.min(matched.bottom, p.price);
+          matched.avgPrice = matched.prices.reduce(function (s, v) { return s + v; }, 0) / matched.prices.length;
+        } else {
+          groups.push({
+            avgPrice: p.price, top: p.price, bottom: p.price,
+            prices: [p.price], indices: [p.index], count: 1
+          });
+        }
+      }
+      return groups.map(function (g) {
+        return {
+          price: g.avgPrice,
+          top: g.top,
+          bottom: g.bottom,
+          touches: g.count,
+          indices: g.indices,
+          strength: Math.min(100, g.count * 30)
+        };
+      });
+    }
+
+    const clusters = cluster(pivots);
+    const supports = clusters.filter(function (c) { return c.price < currentPrice; })
+      .sort(function (a, b) { return b.price - a.price; })
+      .slice(0, maxZones);
+    const resistances = clusters.filter(function (c) { return c.price > currentPrice; })
+      .sort(function (a, b) { return a.price - b.price; })
+      .slice(0, maxZones);
+
     return {
-      support: supports.length ? Math.max.apply(null, supports) : null,
-      resistance: resistances.length ? Math.min.apply(null, resistances) : null
+      supports: supports,
+      resistances: resistances,
+      bestSupport: supports[0] || null,
+      bestResistance: resistances[0] || null
     };
+  }
+
+  function proximitySignal(currentPrice, atrVal, levels, direction, rsiVal) {
+    if (!num(currentPrice) || !(atrVal > 0)) return null;
+    const nearDist = atrVal * 0.6;
+
+    if (direction === 1 && levels.bestSupport) {
+      const dist = currentPrice - levels.bestSupport.price;
+      if (dist >= 0 && dist <= nearDist) {
+        const strong = levels.bestSupport.touches >= 2;
+        const rsiOk = !num(rsiVal) || rsiVal < 55;
+        if (strong && rsiOk) {
+          return { type: 'strong_buy', label: 'SOPORTE FUERTE — COMPRAR', level: levels.bestSupport.price, distance: dist, touches: levels.bestSupport.touches };
+        }
+        return { type: 'buy', label: 'Cerca de soporte', level: levels.bestSupport.price, distance: dist, touches: levels.bestSupport.touches };
+      }
+    }
+
+    if (direction === -1 && levels.bestResistance) {
+      const dist = levels.bestResistance.price - currentPrice;
+      if (dist >= 0 && dist <= nearDist) {
+        const strong = levels.bestResistance.touches >= 2;
+        const rsiOk = !num(rsiVal) || rsiVal > 45;
+        if (strong && rsiOk) {
+          return { type: 'strong_sell', label: 'RESISTENCIA FUERTE — VENDER', level: levels.bestResistance.price, distance: dist, touches: levels.bestResistance.touches };
+        }
+        return { type: 'sell', label: 'Cerca de resistencia', level: levels.bestResistance.price, distance: dist, touches: levels.bestResistance.touches };
+      }
+    }
+
+    return null;
   }
 
   function findExtremeIdx(arr, start, end, findMin) {
@@ -409,12 +511,24 @@
     }
 
     const isBuy = ctx.overallDirection === 1;
+    let finalLabel = isBuy ? 'PREPARAR COMPRA' : 'PREPARAR VENTA';
+    let extra = '';
+
+    if (ctx.proximitySignal && (ctx.proximitySignal.type === 'strong_buy' || ctx.proximitySignal.type === 'strong_sell')) {
+      const proxDir = ctx.proximitySignal.type === 'strong_buy' ? 1 : -1;
+      if (proxDir === ctx.overallDirection) {
+        finalLabel = isBuy ? '¡COMPRAR AHORA!' : '¡VENDER AHORA!';
+        extra = ' 📍 ' + ctx.proximitySignal.label + ' @ ' + ctx.fmt(ctx.proximitySignal.level);
+      }
+    }
+
     return {
       state: isBuy ? 'buy' : 'sell',
-      label: isBuy ? 'PREPARAR COMPRA' : 'PREPARAR VENTA',
+      label: finalLabel,
       reason: 'Sesgo ' + (isBuy ? 'alcista' : 'bajista') +
         ' confirmado. ADX ' + ctx.avgAdxAligned.toFixed(1) +
-        ' · R:R ' + ctx.risk.rr.toFixed(2) + ':1 · Stop ' + ctx.fmt(ctx.risk.stop) + ' · Target ' + ctx.fmt(ctx.risk.target) + '.'
+        ' · R:R ' + ctx.risk.rr.toFixed(2) + ':1 · Stop ' + ctx.fmt(ctx.risk.stop) +
+        ' · Target ' + ctx.fmt(ctx.risk.target) + '.' + extra
     };
   }
 
@@ -441,6 +555,8 @@
       sessionLabel: sessionLabel || SESSION_LABELS.closed,
       symbolFamily: symbolFamily || 'unknown',
       entryTf: null,
+      levels: { supports: [], resistances: [], bestSupport: null, bestResistance: null },
+      proximitySignal: null,
       conclusion: reason || 'Datos insuficientes.',
       computedAt: Date.now()
     };
@@ -463,7 +579,7 @@
     const regimeCfg = c.regime || {};
     const exCfg = c.exhaustion || {};
     const thresholds = consensusCfg.thresholds || { strong: 65, moderate: 45 };
-    const minValidTfs = consensusCfg.minimumValidTfs || 2; // Cambiado por defecto a 2
+    const minValidTfs = consensusCfg.minimumValidTfs || 2;
     const weightedMajority = consensusCfg.weightedMajority || 0.60;
     const adxMin = regimeCfg.adxMin || 22;
     const dangerBlock = exCfg.dangerBlockThreshold || 2;
@@ -496,7 +612,6 @@
       }
     }
 
-    // Si de plano no hay NADA de datos, devolvemos vacío.
     if (valid.length === 0) {
       return emptyResult(
         'Datos insuficientes: no se ha podido analizar ninguna temporalidad.',
@@ -534,7 +649,6 @@
     let alerts = [];
     let atrVal = 0;
 
-    // Calculamos métricas de la TF de entrada (15m) incluso si solo hay 1 TF
     if (entryBars && entryBars.length >= 20) {
       const hc = entryBars.map(function (b) { return b.c; });
       const hh = entryBars.map(function (b) { return b.h; });
@@ -574,18 +688,27 @@
 
     const entryData = perTf[entryTf];
     const currentPrice = entryData ? entryData.price : (valid[0] ? valid[0].data.price : null);
-    const levels = findNearestLevels(entryBars, currentPrice, 3);
+    const levels = findLevelZones(entryBars, currentPrice, { lookback: 3, maxZones: 3, atr: atrVal });
+    const riskLevels = {
+      support: levels.bestSupport ? levels.bestSupport.price : null,
+      resistance: levels.bestResistance ? levels.bestResistance.price : null
+    };
     const risk = overallDirection !== 0
-      ? suggestRisk(currentPrice, levels.support, levels.resistance, atrVal, overallDirection)
+      ? suggestRisk(currentPrice, riskLevels.support, riskLevels.resistance, atrVal, overallDirection)
       : null;
+
+    const proxSignal = proximitySignal(
+      currentPrice, atrVal, levels,
+      overallDirection || 0,
+      entryData ? entryData.rsi : null
+    );
 
     const digits = (c.symbols && c.symbols[symbol] && c.symbols[symbol].digits) || 2;
     const fmt = function (p) { return num(p) ? p.toFixed(digits) : '—'; };
     const dangerCount = alerts.filter(function (a) { return a.type === 'danger'; }).length;
 
     let verdict;
-    
-    // Si falta alguna TF, no bloqueamos las métricas, pero avisamos en el veredicto.
+
     if (valid.length < minValidTfs) {
       verdict = {
         state: 'wait',
@@ -607,6 +730,7 @@
         dangerBlock: dangerBlock,
         risk: risk,
         minRR: minRR,
+        proximitySignal: proxSignal,
         fmt: fmt
       });
     }
@@ -617,6 +741,9 @@
       conclusionParts.push('Mercado cerrado para ' + symbol + ' (' + marketState.family + ').');
     } else if (verdict.state === 'buy' || verdict.state === 'sell') {
       conclusionParts.push('Setup ' + dirText + ' con consenso ' + consensusScore.toFixed(0) + '%, confianza ' + confidence.toFixed(0) + '%.');
+      if (proxSignal && (proxSignal.type === 'strong_buy' || proxSignal.type === 'strong_sell')) {
+        conclusionParts.push('Señal de proximidad: ' + proxSignal.label + ' @ ' + fmt(proxSignal.level) + ' (' + proxSignal.touches + ' toques).');
+      }
       if (alerts.length > 0) conclusionParts.push(alerts.length + ' alerta(s).');
     } else {
       conclusionParts.push('Sin setup válido: ' + verdict.reason);
@@ -639,6 +766,8 @@
       verdictLabel: verdict.label,
       verdictReason: verdict.reason,
       verdictRisk: risk,
+      levels: levels,
+      proximitySignal: proxSignal,
       marketOpen: marketState.open,
       highLiquidity: liquidityState.overlap,
       sessionLabel: sessionLabel,

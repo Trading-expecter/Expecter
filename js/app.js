@@ -11,8 +11,7 @@
   const UPDATE_INTERVAL_MS = TIM.updateIntervalMs || 1000;
   const PRICE_CHECK_MS = TIM.priceCheckMs || 500;
   const MAX_SIGNAL_LOG = 500;
-  const BAR_LIMIT = 150;                // Velas por timeframe
-  const DELAY_BETWEEN_TFS = 2500;       // 2.5s de pausa entre peticiones (evita 429)
+  const BAR_LIMIT = 300;
 
   const state = {
     symbol: 'XAUUSD',
@@ -61,6 +60,8 @@
     if (v == null || !Number.isFinite(v)) return '—';
     return (v >= 0 ? '+' : '') + Number(v).toFixed(d);
   }
+
+  function num(v) { return v != null && Number.isFinite(v); }
 
   function needleAngle(score, dir) {
     if (dir === 0 || dir == null) return 0;
@@ -178,6 +179,11 @@
     badge.className = 'verdict-badge ' + a.verdictState;
 
     let text = a.verdictReason || '';
+    if (a.proximitySignal) {
+      text += ' · 📍 ' + a.proximitySignal.label +
+        ' @ ' + fmt(state.symbol, a.proximitySignal.level) +
+        ' (' + a.proximitySignal.touches + ' toques)';
+    }
     if (a.verdictRisk && a.verdictRisk.valid) {
       const r = a.verdictRisk;
       text += ' · Stop ' + fmt(state.symbol, r.stop) + ' · Target ' + fmt(state.symbol, r.target);
@@ -297,7 +303,10 @@
         html += '<button type="button" role="tab" data-tf="' + esc(tf) + '"' +
           ' aria-selected="' + (tf === state.tf ? 'true' : 'false') + '"' +
           (isOpt ? ' data-optional="true"' : '') + '>' +
-          '<span class="tfn">' + esc(tf) + '</span><span class="lab neutral">—</span></button>';
+          '<span class="tfn">' + esc(tf) + '</span>' +
+          '<span class="lab neutral">—</span>' +
+          '<span class="meta" style="display:block;font-size:9px;opacity:0.65;line-height:1.1;margin-top:1px;"></span>' +
+          '</button>';
       });
       box.innerHTML = html;
     }
@@ -309,14 +318,42 @@
       btn.setAttribute('aria-selected', tf === state.tf ? 'true' : 'false');
 
       const lab = btn.querySelector('.lab');
+      const meta = btn.querySelector('.meta');
       if (!lab) return;
-      if (tfData) {
-        if (tfData.direction === 1) { lab.textContent = 'Alcista'; lab.className = 'lab buy'; }
-        else { lab.textContent = 'Bajista'; lab.className = 'lab sell'; }
-        if (tfData.regimeValid === false) { lab.textContent += ' ·'; lab.title = 'Régimen no válido'; }
-        else lab.title = '';
-      } else if (a) { lab.textContent = '—'; lab.className = 'lab neutral'; }
-      else { lab.textContent = '…'; lab.className = 'lab neutral'; }
+
+      if (!tfData) {
+        if (a) { lab.textContent = '—'; lab.className = 'lab neutral'; }
+        else { lab.textContent = '…'; lab.className = 'lab neutral'; }
+        if (meta) meta.textContent = '';
+        return;
+      }
+
+      const dir = tfData.direction;
+      const adx = tfData.adx;
+      const rsi = tfData.rsi;
+      const strong = tfData.adxStrong || (num(adx) && adx >= 28);
+
+      let dirText, dirClass;
+      if (dir === 1) {
+        dirText = strong ? 'Alcista ★' : 'Alcista';
+        dirClass = 'lab buy';
+      } else if (dir === -1) {
+        dirText = strong ? 'Bajista ★' : 'Bajista';
+        dirClass = 'lab sell';
+      } else {
+        dirText = 'Lateral';
+        dirClass = 'lab neutral';
+      }
+      lab.textContent = dirText;
+      lab.className = dirClass;
+      lab.title = tfData.degraded ? 'EMA degradada (historial corto)' : '';
+
+      if (meta) {
+        const parts = [];
+        if (num(adx)) parts.push('ADX ' + adx.toFixed(0));
+        if (num(rsi)) parts.push('RSI ' + rsi.toFixed(0));
+        meta.textContent = parts.join(' · ');
+      }
     });
   }
 
@@ -346,7 +383,9 @@
       Math.round(a.consensusScore || 0), Math.round(a.confidence || 0),
       state.smcResult ? Math.round(state.smcResult.score || 0) : 0,
       state.smcResult ? state.smcResult.grade || '' : '',
-      (a.alerts || []).length, state.feedMode
+      (a.alerts || []).length,
+      a.proximitySignal ? a.proximitySignal.type : '',
+      state.feedMode
     ].join('|');
   }
 
@@ -544,44 +583,37 @@
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; rafPending = false; }
   }
 
-  // -----------------------------------------------------------------
-  // CARGA SECUENCIAL BLINDADA (Evita 429 y fallos en cascada)
-  // -----------------------------------------------------------------
-  function delay(ms) {
-    return new Promise(function (r) { setTimeout(r, ms); });
-  }
-
   async function loadAllBars() {
     state.loading = true;
     state.requestId++;
     const myId = state.requestId;
     const tfs = CFG.timeframes.list || ['15m', '1h', '4h', '1d'];
-
     const newBars = {};
 
-    for (let i = 0; i < tfs.length; i++) {
-      if (state.requestId !== myId) return null;
-      const tf = tfs[i];
+    const tasks = tfs.map(function (tf) {
+      return function (signal) {
+        return D.fetchBars(state.symbol, tf, BAR_LIMIT, signal).then(function (bars) {
+          return { tf: tf, bars: bars };
+        });
+      };
+    });
 
-      try {
-        console.log('[app] Solicitando ' + tf + '...');
-        // D.fetchBars ya tiene reintentos internos automáticos para el error 429
-        const bars = await D.fetchBars(state.symbol, tf, BAR_LIMIT);
-        if (bars && bars.length > 0) {
-          newBars[tf] = bars;
-          console.log('[app] ' + tf + ' cargado con éxito (' + bars.length + ' velas).');
-        }
-      } catch (e) {
-        console.warn('[app] Fallo definitivo al cargar ' + tf + ':', e && e.message);
-      }
-
-      // Pausa OBLIGATORIA de 2.5s entre peticiones para no saturar la API de Biquote
-      if (i < tfs.length - 1) await delay(DELAY_BETWEEN_TFS);
+    let results = [];
+    try {
+      results = await D.pool(tasks, 2, 45000);
+    } catch (e) {
+      console.warn('[app] pool timeout, usando resultados parciales');
+      results = (e && e.partial) || [];
     }
 
     if (state.requestId !== myId) return null;
 
-    // Volcamos los datos recopilados
+    results.forEach(function (r) {
+      if (r && r.ok && r.v && r.v.bars && r.v.bars.length) {
+        newBars[r.v.tf] = r.v.bars;
+      }
+    });
+
     Object.keys(newBars).forEach(function (tf) {
       state.bars[tf] = newBars[tf];
     });
@@ -896,20 +928,15 @@
 
     startMasterLoop();
 
-    // IMPORTANTE: Primero cargamos todas las velas. 
-    // El feed se inicia DESPUÉS para que su polling no interfiera con la carga inicial.
-    loadAllBars().then(function (results) {
-      
+    loadAllBars().then(function () {
       try { startFeed(); }
       catch (e) {
         console.error('[app] startFeed falló:', e);
         state.feedMode = 'error';
         renderStatus();
       }
-
     }).catch(function (e) {
       console.error('[app] loadAllBars rechazó en init:', e);
-      // Aún así iniciamos el feed como fallback
       try { startFeed(); } catch (err) { void 0; }
       renderAll(true);
     });

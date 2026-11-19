@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '4.0.2',
+  version: '4.0.3',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -40,7 +40,7 @@ window.AT_CONFIG = {
   },
 
   consensus: {
-    minimumValidTfs: 1, // Permitimos operar con 1 TF si las demás fallan
+    minimumValidTfs: 1,
     weightedMajority: 0.60,
     thresholds: { strong: 65, moderate: 45 },
     adxNormalizationCeiling: 40,
@@ -150,13 +150,14 @@ window.AT_CONFIG = {
 
   feed: {
     fetchTimeout: 15000,
-    globalTimeout: 60000, // Subimos a 60s porque ahora es secuencial
+    globalTimeout: 60000,
     pollMs: 2000,
     pollSlowMs: 20000,
     retryMs: 60000,
     backoffMs: 10000,
-    maxConcurrent: 1,    // IMPORTANTE: 1 petición a la vez para no saturar la API
+    maxConcurrent: 2,
     staleThresholdMs: 15000,
+    wsSilenceTimeoutMs: 8000,
     maxRetries: 3,
     wsEnabled: true,
     wsReconnectMs: 3000,

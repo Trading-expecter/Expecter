@@ -33,7 +33,7 @@
   function isRetryable(e) {
     if (!e || e.aborted) return false;
     if (e.network || e.timeout) return true;
-    if (e.status === 429) return true; // IMPORTANTE: Reintentar bloqueos de la API
+    if (e.status === 429) return true;
     return e.status >= 500 && e.status < 600;
   }
 
@@ -82,12 +82,9 @@
       if (e && e.aborted) throw e;
       if (attempt < maxAttempts && isRetryable(e)) {
         let delay = Math.min(2000, Math.pow(2, attempt - 1) * 300) + Math.random() * 200;
-        
-        // Si la API nos bloquea (429), esperamos obligatoriamente 4 segundos
         if (e.status === 429) {
           delay = e.retryAfter > 0 ? e.retryAfter * 1000 : 4000;
         }
-
         return new Promise(function (res) { setTimeout(res, delay); })
           .then(function () { return getJSON(path, timeoutMs, attempt + 1, externalSignal); });
       }
@@ -235,6 +232,7 @@
     const staleMs = feedCfg().staleThresholdMs || 15000;
     const wsBaseMs = feedCfg().wsReconnectMs || 3000;
     const wsMaxMs = feedCfg().wsMaxReconnectMs || 30000;
+    const wsSilenceMs = feedCfg().wsSilenceTimeoutMs || 8000;
 
     let conn = null;
     let pollTimer = null;
@@ -275,6 +273,17 @@
     function checkStale() {
       if (stopped || !lastTickAt) return;
       const age = Date.now() - lastTickAt;
+
+      if (mode === 'live' && age > wsSilenceMs) {
+        console.warn('[feed] WS mudo ' + Math.round(age / 1000) + 's → polling rápido');
+        setMode('polling');
+        startPolling(pollMs);
+        poll().catch(function () { void 0; });
+        if (conn) {
+          try { conn.stop(); } catch (e) { void 0; }
+        }
+      }
+
       if (age > staleMs && !staleEmitted) {
         staleEmitted = true;
         if (handlers.status) handlers.status('stale', lastError);
@@ -370,6 +379,19 @@
               wsAttempt = 0;
               setMode('live');
               startPolling(pollSlowMs);
+
+              poll().catch(function () { void 0; });
+
+              const t0 = Date.now();
+              setTimeout(function () {
+                if (stopped || mode !== 'live') return;
+                if (lastTickAt < t0 || (Date.now() - lastTickAt) > wsSilenceMs) {
+                  console.warn('[feed] WS sin ticks en ' + wsSilenceMs + 'ms → polling rápido');
+                  startPolling(pollMs);
+                  poll().catch(function () { void 0; });
+                }
+              }, wsSilenceMs + 500);
+
               finish(true);
             })
             .catch(function () {
