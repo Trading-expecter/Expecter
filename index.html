@@ -194,6 +194,57 @@
     <ul id="alertList" class="alert-list" aria-live="assertive"></ul>
   </section>
 
+  <section class="card journal-card" id="journalCard" aria-labelledby="journal-label">
+    <header class="card-head">
+      <span class="card-label" id="journal-label">Historial de señales</span>
+      <span id="journalStorage" class="journal-storage muted small" aria-live="polite">—</span>
+    </header>
+
+    <div class="journal-stats" id="journalStats" aria-live="polite">
+      <div class="journal-stat">
+        <span class="journal-stat-label">Total</span>
+        <strong id="jTotal" class="journal-stat-val">0</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Ganadas</span>
+        <strong id="jWins" class="journal-stat-val up">0</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Perdidas</span>
+        <strong id="jLosses" class="journal-stat-val down">0</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Pendientes</span>
+        <strong id="jPending" class="journal-stat-val">0</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Winrate</span>
+        <strong id="jWinRate" class="journal-stat-val">—</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Expectancy</span>
+        <strong id="jExpectancy" class="journal-stat-val">—</strong>
+      </div>
+      <div class="journal-stat">
+        <span class="journal-stat-label">Profit Factor</span>
+        <strong id="jProfitFactor" class="journal-stat-val">—</strong>
+      </div>
+    </div>
+
+    <div class="journal-actions" role="group" aria-label="Acciones del historial">
+      <button type="button" id="journalExportJSON" class="journal-btn primary">
+        <span aria-hidden="true">⬇</span> Descargar JSON
+      </button>
+      <button type="button" id="journalExportCSV" class="journal-btn">
+        <span aria-hidden="true">⬇</span> Descargar CSV
+      </button>
+      <button type="button" id="journalClear" class="journal-btn danger">
+        <span aria-hidden="true">🗑</span> Borrar historial
+      </button>
+      <span id="journalFeedback" class="journal-feedback muted small" aria-live="polite"></span>
+    </div>
+  </section>
+
 </main>
 
 <footer class="foot" role="contentinfo">
@@ -210,6 +261,7 @@
 <script defer src="js/smc/zones.js"></script>
 <script defer src="js/smc/ote.js"></script>
 <script defer src="js/smc-engine.js"></script>
+<script defer src="js/journal.js"></script>
 <script defer src="js/chart.js"></script>
 <script defer src="js/app.js"></script>
 
