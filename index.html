@@ -4,18 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0e14">
-  <meta name="description" content="SMC Momentum Fusion — Análisis institucional multi-temporal para XAUUSD M15. Confluencia SMC, momentum y gestión de riesgo.">
+  <meta name="theme-color" content="#0B0E13">
+  <meta name="description" content="ShadowAnalisador — Análisis técnico multi-temporal con confluencia SMC y gestión de riesgo institucional.">
   <meta name="format-detection" content="telephone=no">
-  <meta name="referrer" content="strict-origin-when-cross-origin">
-  <title>SMC Momentum Fusion · XAUUSD M15</title>
+  <title>ShadowAnalisador</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
   <style>
-    .skip-link{position:absolute;top:-100px;left:10px;z-index:9999;padding:12px 18px;background:#5b8def;color:#0b0e14;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;}
-    .skip-link:focus{top:10px;}
-    button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid #5b8def;outline-offset:3px;}
-    [hidden]{display:none!important;}
-    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+    .skip-link{position:absolute;top:-100px;left:10px;z-index:9999;padding:12px 18px;background:#4F8CFF;color:#0B0E13;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none}
+    .skip-link:focus{top:10px}
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,a:focus-visible{outline:2px solid #4F8CFF;outline-offset:3px}
+    [hidden]{display:none!important}
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   </style>
 </head>
 <body>
@@ -23,39 +25,39 @@
 <a class="skip-link" href="#mainContent">Saltar al contenido principal</a>
 
 <noscript>
-  <div style="padding:48px 24px;text-align:center;color:#e6edf3;background:#0b0e14;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px;">
-    <h1 style="margin:0;font-size:22px;font-weight:700;">SMC Momentum Fusion</h1>
-    <p style="margin:0;max-width:480px;font-size:14px;color:#8b98ab;">Este panel requiere JavaScript habilitado para cargar datos de mercado, calcular el consenso multi-temporal y renderizar el gráfico.</p>
+  <div style="padding:48px 24px;text-align:center;color:#F1F5F9;background:#0B0E13;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px">
+    <h1 style="margin:0;font-size:22px;font-weight:700">ShadowAnalisador</h1>
+    <p style="margin:0;max-width:480px;font-size:14px;color:#94A3B8">Este panel requiere JavaScript habilitado para cargar datos de mercado, calcular el consenso multi-temporal y renderizar el gráfico.</p>
   </div>
 </noscript>
 
 <header class="top" role="banner">
   <div class="top-inner">
-    <div class="brand" aria-label="SMC Momentum Fusion">
+    <div class="brand" aria-label="ShadowAnalisador">
       <span class="brand-mark" aria-hidden="true">S</span>
       <span class="brand-text">
-        <strong>SMC Momentum</strong>
-        <span class="brand-pro">FUSION</span>
+        <strong>Shadow</strong>
+        <span class="brand-pro">Analisador</span>
       </span>
     </div>
     <nav class="symbols" id="symbolBar" role="toolbar" aria-label="Seleccionar mercado"></nav>
-    <div class="status" role="status" aria-live="polite">
-      <span class="dot" id="statusDot"></span>
+    <div class="status" role="status" aria-live="polite" aria-atomic="true">
+      <span class="dot" id="statusDot" aria-hidden="true"></span>
       <span id="statusText">Conectando…</span>
     </div>
   </div>
 </header>
 
-<main id="mainContent" class="dashboard" role="main">
+<main id="mainContent" class="dashboard">
 
   <section class="price-card card" aria-labelledby="price-label">
     <header class="card-head">
       <span class="card-label" id="price-label">Precio</span>
       <span id="sessionBadge" class="session-badge neutral">—</span>
     </header>
-    <div id="priceBig" class="price-big">—</div>
+    <div id="priceBig" class="price-big" role="status" aria-live="polite" aria-atomic="true">—</div>
     <div class="price-meta">
-      <span id="priceChg" class="price-chg"></span>
+      <span id="priceChg" class="price-chg" aria-live="polite"></span>
       <span id="priceSub" class="price-sub"></span>
     </div>
   </section>
@@ -64,10 +66,12 @@
     <header class="card-head">
       <span class="card-label" id="verdict-label">Veredicto de operación</span>
     </header>
-    <div class="verdict-content" role="status" aria-live="polite">
-      <div id="verdictBadge" class="verdict-badge wait">ESPERAR</div>
+    <div class="verdict-content" role="status" aria-live="polite" aria-atomic="true">
+      <div id="verdictBadge" class="verdict-badge wait">
+        <span class="verdict-icon" aria-hidden="true">◷</span>
+        <span class="verdict-text">ESPERAR</span>
+      </div>
       <p id="verdictReason" class="verdict-reason">Analizando condiciones de mercado...</p>
-      <div id="verdictSizing" class="verdict-sizing" hidden></div>
     </div>
   </section>
 
@@ -86,20 +90,19 @@
         <circle cx="100" cy="100" r="5" class="needle-hub"/>
       </g>
     </svg>
-    <div id="gaugeLabel" class="gauge-label neutral" aria-live="polite">—</div>
+    <div id="gaugeLabel" class="gauge-label neutral" aria-live="polite" aria-atomic="true">—</div>
     <div id="gaugeScore" class="gauge-score" aria-live="polite"></div>
   </section>
 
   <section class="smc-card card" id="smcCard" aria-labelledby="smc-label">
     <header class="card-head">
       <span class="card-label" id="smc-label">Análisis institucional (SMC)</span>
-      <strong id="smcScore" class="smc-score" aria-live="polite">0%</strong>
+      <strong id="smcScore" class="smc-score" aria-live="polite" aria-atomic="true">0%</strong>
     </header>
     <div class="smc-bar-bg" aria-hidden="true">
       <div id="smcBarFill" class="smc-bar-fill" style="width:0%"></div>
     </div>
-    <div id="smcSequence" class="smc-sequence" hidden></div>
-    <ul id="smcReasons" class="smc-reasons">
+    <ul id="smcReasons" class="smc-reasons" aria-live="polite">
       <li class="muted">Esperando datos...</li>
     </ul>
   </section>
@@ -107,27 +110,27 @@
   <div class="metrics-grid" role="group" aria-label="Métricas macro">
     <div class="card metric-card">
       <span class="card-label">Tendencia</span>
-      <strong id="macroTrend" class="metric-val" aria-live="polite">—</strong>
+      <strong id="macroTrend" class="metric-val" aria-live="polite" aria-atomic="true">—</strong>
     </div>
     <div class="card metric-card">
       <span class="card-label">Momentum</span>
-      <strong id="macroMomentum" class="metric-val" aria-live="polite">—</strong>
+      <strong id="macroMomentum" class="metric-val" aria-live="polite" aria-atomic="true">—</strong>
     </div>
     <div class="card metric-card">
       <span class="card-label">Volatilidad</span>
-      <strong id="macroVolatility" class="metric-val" aria-live="polite">—</strong>
+      <strong id="macroVolatility" class="metric-val" aria-live="polite" aria-atomic="true">—</strong>
     </div>
     <div class="card metric-card">
       <span class="card-label">Estructura</span>
-      <strong id="macroStructure" class="metric-val" aria-live="polite">—</strong>
+      <strong id="macroStructure" class="metric-val" aria-live="polite" aria-atomic="true">—</strong>
     </div>
   </div>
 
   <section class="card chart-card" id="chartCard" aria-labelledby="chart-label">
     <header class="chart-head">
       <span class="card-label" id="chart-label">Gráfico</span>
-      <div id="legend" class="legend muted small" aria-live="polite">&nbsp;</div>
-      <div class="chart-tools">
+      <div id="legend" class="legend muted small" aria-live="polite" aria-atomic="true">&nbsp;</div>
+      <div class="chart-tools" role="toolbar" aria-label="Herramientas del gráfico">
         <button type="button" id="chartFullscreen" aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
         <button type="button" id="zoomOut" aria-label="Alejar" title="Alejar">−</button>
         <button type="button" id="zoomIn" aria-label="Acercar" title="Acercar">+</button>
@@ -137,38 +140,37 @@
     </header>
     <div class="drawing-menu" id="drawingMenu" role="menu" aria-label="Herramientas de dibujo" hidden>
       <button type="button" class="tool-btn active" data-tool="cursor" role="menuitemradio" aria-checked="true">
-        <span class="tool-icon">↖</span><span>Seleccionar / Pan</span>
+        <span class="tool-icon" aria-hidden="true">↖</span><span>Seleccionar / Pan</span>
       </button>
       <div class="drawing-sep" role="separator"></div>
       <button type="button" class="tool-btn" data-tool="line" role="menuitemradio" aria-checked="false">
-        <span class="tool-icon">╱</span><span>Línea de tendencia</span>
+        <span class="tool-icon" aria-hidden="true">╱</span><span>Línea de tendencia</span>
       </button>
       <button type="button" class="tool-btn" data-tool="h" role="menuitemradio" aria-checked="false">
-        <span class="tool-icon">─</span><span>Línea horizontal</span>
+        <span class="tool-icon" aria-hidden="true">─</span><span>Línea horizontal</span>
       </button>
       <button type="button" class="tool-btn" data-tool="v" role="menuitemradio" aria-checked="false">
-        <span class="tool-icon">│</span><span>Línea vertical</span>
+        <span class="tool-icon" aria-hidden="true">│</span><span>Línea vertical</span>
       </button>
       <button type="button" class="tool-btn" data-tool="rect" role="menuitemradio" aria-checked="false">
-        <span class="tool-icon">▭</span><span>Rectángulo</span>
+        <span class="tool-icon" aria-hidden="true">▭</span><span>Rectángulo</span>
       </button>
       <button type="button" class="tool-btn" data-tool="fib" role="menuitemradio" aria-checked="false">
-        <span class="tool-icon">π</span><span>Fibonacci</span>
+        <span class="tool-icon" aria-hidden="true">π</span><span>Fibonacci</span>
       </button>
       <div class="drawing-sep" role="separator"></div>
       <button type="button" class="tool-btn" id="drawUndo" role="menuitem">
-        <span class="tool-icon">↶</span><span>Deshacer último</span>
+        <span class="tool-icon" aria-hidden="true">↶</span><span>Deshacer último</span>
       </button>
       <button type="button" class="tool-btn danger" id="drawClear" role="menuitem">
-        <span class="tool-icon">🗑</span><span>Borrar todo</span>
+        <span class="tool-icon" aria-hidden="true">🗑</span><span>Borrar todo</span>
       </button>
     </div>
-    <canvas id="chart" role="img" tabindex="0" aria-label="Gráfico de velas japonesas con EMA 9, 21, 50, VWAP y zonas de Order Blocks, Fair Value Gaps y OTE"></canvas>
-    <div class="legend-ema muted small">
-      <span class="k e1"></span> EMA 9
-      <span class="k e2"></span> EMA 21
-      <span class="k e3"></span> EMA 50
-      <span class="k vwap"></span> VWAP
+    <canvas id="chart" role="img" tabindex="0" aria-label="Gráfico de velas japonesas con EMA 20, 50 y 200, y zonas de Order Blocks, Fair Value Gaps y OTE"></canvas>
+    <div class="legend-ema muted small" aria-hidden="true">
+      <span class="k e1"></span> EMA 20
+      <span class="k e2"></span> EMA 50
+      <span class="k e3"></span> EMA 200
     </div>
   </section>
 
@@ -184,18 +186,18 @@
 
   <section class="card conclusion-card" id="conclusionCard" aria-labelledby="conclusion-label">
     <span class="card-label" id="conclusion-label">Conclusión del análisis</span>
-    <p id="conclusionText" class="conclusion-text" aria-live="polite">Esperando datos suficientes para generar un veredicto...</p>
+    <p id="conclusionText" class="conclusion-text" aria-live="polite" aria-atomic="true">Esperando datos suficientes para generar un veredicto...</p>
   </section>
 
   <section class="card alert-card" id="alertCard" hidden aria-labelledby="alert-label">
     <span class="card-label warn" id="alert-label">Alertas de agotamiento</span>
-    <ul id="alertList" class="alert-list" aria-live="polite"></ul>
+    <ul id="alertList" class="alert-list" aria-live="assertive"></ul>
   </section>
 
 </main>
 
 <footer class="foot" role="contentinfo">
-  <p>SMC Momentum Fusion · XAUUSD M15 · Análisis institucional</p>
+  <p>ShadowAnalisador · Análisis técnico institucional</p>
   <p>Fines educativos. No constituye asesoramiento financiero.</p>
 </footer>
 
