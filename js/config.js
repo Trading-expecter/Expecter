@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '5.0.0-scalping',
+  version: '6.0.0-scalping-anticipativo',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -20,7 +20,37 @@ window.AT_CONFIG = {
     maxSignalsPerHour: 12,
     maxSignalsPerSession: 40,
     requireLiveTick: true,
-    minSignalScore: 60
+    minSignalScore: 65,
+    minValidTfs: 2,
+    maxAdxForTrend: 40,
+    rejectIfAdxExhausted: true,
+    rejectIfRsiExtreme: true,
+    defaultVerdict: 'ESPERAR'
+  },
+
+  reversal: {
+    enabled: true,
+    rsiBuyZone: 32,
+    rsiSellZone: 68,
+    rsiExitBuy: 38,
+    rsiExitSell: 62,
+    requireDivergence: true,
+    requireSweep: true,
+    requireCandleRejection: true,
+    minScore: 65,
+    strongScore: 80,
+    adxExhaustion: 35,
+    adxDropPct: 15
+  },
+
+  continuation: {
+    enabled: true,
+    emaProximityAtr: 0.5,
+    vwapProximityAtr: 0.75,
+    requireCandleRejection: true,
+    minScore: 60,
+    strongScore: 75,
+    maxAdx: 40
   },
 
   symbols: {
@@ -53,6 +83,7 @@ window.AT_CONFIG = {
     adxPeriod: 14,
     adxMin: 18,
     adxStrong: 25,
+    adxMax: 40,
     emaPeriods: [9, 21, 50],
     emaStackRequired: true,
     emaSeparationMinPct: 0.08,
@@ -119,10 +150,10 @@ window.AT_CONFIG = {
 
   exhaustion: {
     rsiPeriod: 14,
-    rsiOverbought: 80,
-    rsiOversold: 20,
-    adxDropPct: 30,
-    lookbackCandles: 3,
+    rsiOverbought: 75,
+    rsiOversold: 25,
+    adxDropPct: 20,
+    lookbackCandles: 5,
     volumeDropPct: 40,
     volumeLookback: 15,
     divergenceLookback: 8,

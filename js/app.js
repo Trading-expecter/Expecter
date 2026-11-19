@@ -23,7 +23,7 @@
   const LOSS_COOLDOWN_MS = SCALP.lossCooldownMs || 900000;
   const MAX_SIGNALS_PER_HOUR = SCALP.maxSignalsPerHour || 12;
   const MAX_SIGNALS_PER_SESSION = SCALP.maxSignalsPerSession || 40;
-  const MIN_SIGNAL_SCORE = SCALP.minSignalScore || 60;
+  const MIN_SIGNAL_SCORE = SCALP.minSignalScore || 65;
   const REQUIRE_LIVE_TICK = SCALP.requireLiveTick !== false;
 
   const state = {
@@ -204,55 +204,21 @@
       return;
     }
 
-    const mtf = a.multiTfSignal;
     let mainLabel = a.verdictLabel;
     let mainState = a.verdictState;
-    let isAnticipation = false;
-
-    if (a.anticipation && a.anticipation.strength === 'strong') {
-      isAnticipation = true;
-    }
-
-    if (!isAnticipation && mtf && mtf.action !== 'wait' && (a.verdictState === 'wait' || a.verdictState !== mtf.action)) {
-      if (mtf.strength === 'strong' || mtf.strength === 'moderate') {
-        mainLabel = mtf.action === 'buy'
-          ? 'CONSENSO: COMPRAR' + (mtf.strength === 'strong' ? ' ★' : '')
-          : 'CONSENSO: VENDER' + (mtf.strength === 'strong' ? ' ★' : '');
-        mainState = mtf.action;
-      }
-    }
-
     let icon = mainState === 'buy' ? '▲' : mainState === 'sell' ? '▼' : '◷';
-    if (isAnticipation) icon = '⚡';
+    
+    if (a.verdictLabel.indexOf('Reversión') !== -1) icon = '⚡';
+    else if (a.verdictLabel.indexOf('Retroceso') !== -1) icon = '🎯';
 
     badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
       '<span class="verdict-text">' + esc(mainLabel) + '</span>';
     badge.className = 'verdict-badge ' + mainState;
 
-    let text = '';
+    let text = a.verdictReason || '';
 
-    if (mtf) {
-      text += '📊 ' + mtf.summary;
-    }
-
-    if (a.anticipation) {
-      text += ' · ⚡ ' + a.anticipation.factors.join(', ') + ' (' + a.anticipation.score + '%)';
-    }
-
-    if (a.verdictState === 'buy' || a.verdictState === 'sell') {
-      text += ' · 🎯 ' + a.verdictLabel + ': ' + (a.verdictReason || '');
-    } else if (a.verdictReason && a.verdictReason.indexOf('Faltan') === -1 && a.verdictReason.indexOf('Fuerte confluencia') === -1) {
-      text += ' · ' + a.verdictReason;
-    }
-
-    if (a.proximitySignal) {
-      text += ' · 📍 ' + a.proximitySignal.label +
-        ' @ ' + fmt(state.symbol, a.proximitySignal.level) +
-        ' (' + a.proximitySignal.touches + ' toques)';
-    }
-    if (a.verdictRisk && a.verdictRisk.valid) {
-      const r = a.verdictRisk;
-      text += ' · Stop ' + fmt(state.symbol, r.stop) + ' · Target ' + fmt(state.symbol, r.target);
+    if (a.multiTfSignal && mainState === 'wait') {
+      text += ' 📊 ' + a.multiTfSignal.summary;
     }
 
     reason.textContent = text.replace(/^ · /, '');
@@ -451,8 +417,6 @@
       state.smcResult ? Math.round(state.smcResult.score || 0) : 0,
       state.smcResult ? state.smcResult.grade || '' : '',
       (a.alerts || []).length,
-      a.proximitySignal ? a.proximitySignal.type : '',
-      a.anticipation ? a.anticipation.type + ':' + a.anticipation.score : '',
       a.multiTfSignal ? a.multiTfSignal.action + ':' + a.multiTfSignal.strength : '',
       state.feedMode
     ].join('|');
@@ -489,7 +453,7 @@
   function makeSignalKey(analysis) {
     return [
       state.symbol, analysis.entryTf, analysis.overallDirection,
-      analysis.verdictState,
+      analysis.verdictState, analysis.verdictLabel,
       Math.round((analysis.consensusScore || 0) / 10)
     ].join('::');
   }
@@ -523,22 +487,10 @@
     Object.keys(analysis.perTf || {}).forEach(function (tf) {
       const d = analysis.perTf[tf];
       perTfSnap[tf] = {
-        direction: d.direction,
-        adx: d.adx,
-        adxStrong: d.adxStrong,
-        rsi: d.rsi,
-        emaSepPct: d.emaSepPct,
-        returnPct: d.returnPct,
-        regimeValid: d.regimeValid,
-        price: d.price,
-        fast: d.fast,
-        mid: d.mid,
-        slow: d.slow,
-        plusDI: d.plusDI,
-        minusDI: d.minusDI,
-        weight: d.weight,
-        evidence: d.evidence,
-        degraded: d.degraded
+        direction: d.direction, adx: d.adx, adxStrong: d.adxStrong, rsi: d.rsi,
+        emaSepPct: d.emaSepPct, returnPct: d.returnPct, regimeValid: d.regimeValid,
+        price: d.price, fast: d.fast, mid: d.mid, slow: d.slow,
+        plusDI: d.plusDI, minusDI: d.minusDI, weight: d.weight, evidence: d.evidence, degraded: d.degraded
       };
     });
 
@@ -551,7 +503,6 @@
       entryTf: entryTf,
       direction: analysis.overallDirection,
       action: analysis.overallDirection === 1 ? 'buy' : analysis.overallDirection === -1 ? 'sell' : 'wait',
-
       verdict: {
         state: analysis.verdictState,
         label: analysis.verdictLabel,
@@ -561,7 +512,6 @@
         consensusScore: analysis.consensusScore,
         consensusLabel: analysis.consensusLabel
       },
-
       multiTfSignal: {
         action: analysis.multiTfSignal.action,
         strength: analysis.multiTfSignal.strength,
@@ -569,21 +519,6 @@
         votes: analysis.multiTfSignal.votes,
         summary: analysis.multiTfSignal.summary
       },
-
-      anticipation: analysis.anticipation ? {
-        type: analysis.anticipation.type,
-        score: analysis.anticipation.score,
-        strength: analysis.anticipation.strength,
-        factors: analysis.anticipation.factors ? analysis.anticipation.factors.slice() : []
-      } : null,
-
-      vwapBias: analysis.vwapBias ? {
-        enabled: analysis.vwapBias.enabled,
-        aligned: analysis.vwapBias.aligned,
-        vwap: analysis.vwapBias.vwap,
-        distanceAtr: analysis.vwapBias.distanceAtr
-      } : null,
-
       prices: {
         bid: t ? t.bid : null,
         ask: t ? t.ask : null,
@@ -594,7 +529,6 @@
         target: risk ? risk.target : null,
         rr: risk ? risk.rr : null
       },
-
       smc: state.smcResult ? {
         score: state.smcResult.score,
         grade: state.smcResult.grade,
@@ -607,7 +541,6 @@
           ote: state.smcResult.zones ? state.smcResult.zones.ote : null
         }
       } : null,
-
       snapshot: {
         entryTf: { bars: entrySnapshot },
         higherTfs: higherTfs,
@@ -676,7 +609,6 @@
     if (!analysis) return;
     const curr = analysis.verdictState;
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
-    if (!analysis.verdictRisk && !analysis.anticipation) return;
 
     let effectiveDir = analysis.overallDirection;
     if (effectiveDir === 0 && analysis.anticipation) {
