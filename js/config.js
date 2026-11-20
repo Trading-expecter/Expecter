@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '6.3.0-scalping-stoploss-fix',
+  version: '6.4.0-trade-lifecycle',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -25,7 +25,12 @@ window.AT_CONFIG = {
     maxAdxForTrend: 50,
     rejectIfAdxExhausted: false,
     rejectIfRsiExtreme: false,
-    defaultVerdict: 'ESPERAR'
+    defaultVerdict: 'ESPERAR',
+
+    signalDisplayMs: 5000,
+    closeSignalDisplayMs: 10000,
+    maxBarsPerTrade: 5,
+    oneSignalPerSymbol: true
   },
 
   breakout: {

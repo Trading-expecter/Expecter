@@ -26,6 +26,11 @@
   const MIN_SIGNAL_SCORE = SCALP.minSignalScore || 65;
   const REQUIRE_LIVE_TICK = SCALP.requireLiveTick !== false;
 
+  const SIGNAL_DISPLAY_MS = SCALP.signalDisplayMs || 5000;
+  const CLOSE_DISPLAY_MS = SCALP.closeSignalDisplayMs || 10000;
+  const MAX_BARS_PER_TRADE = SCALP.maxBarsPerTrade || 5;
+  const ONE_SIGNAL_PER_SYMBOL = SCALP.oneSignalPerSymbol !== false;
+
   const state = {
     symbol: 'XAUUSD',
     tf: (CFG.timeframes && CFG.timeframes.entry) || '5m',
@@ -52,7 +57,8 @@
     lastPriceCheckAt: 0,
     lastOutcomeUpdateAt: 0,
     cycleSkipCount: 0,
-    cycleErrorCount: 0
+    cycleErrorCount: 0,
+    activeTrades: {}
   };
 
   const loop = { masterId: 0, priceId: 0, locked: false, stopped: true };
@@ -108,6 +114,145 @@
       rafId = 0;
       try { renderAll(false); }
       catch (e) { console.error('[app] renderAll excepción:', e); }
+    });
+  }
+
+  function tradePrice(symbol) {
+    const t = state.ticks[symbol];
+    if (t && Number.isFinite(t.mid)) return t.mid;
+    const bars = state.bars[symbol === state.symbol ? state.tf : null];
+    if (bars && bars.length) return bars[bars.length - 1].c;
+    return null;
+  }
+
+  function openTrade(symbol, direction, entry, stop, target, label, sourceTf) {
+    if (ONE_SIGNAL_PER_SYMBOL && state.activeTrades[symbol]) return null;
+    const trade = {
+      symbol: symbol,
+      direction: direction,
+      entry: entry,
+      stop: stop,
+      target: target,
+      label: label,
+      sourceTf: sourceTf || state.tf,
+      openedAt: Date.now(),
+      phase: 'entry',
+      phaseStart: Date.now(),
+      outcome: null,
+      exitPrice: null,
+      exitAt: null,
+      rMultiple: null,
+      barsElapsed: 0
+    };
+    state.activeTrades[symbol] = trade;
+    return trade;
+  }
+
+  function computeR(trade, price) {
+    if (!num(price) || !num(trade.entry) || !num(trade.stop)) return null;
+    const risk = Math.abs(trade.entry - trade.stop);
+    if (risk <= 0) return null;
+    if (trade.direction === 1) return (price - trade.entry) / risk;
+    return (trade.entry - price) / risk;
+  }
+
+  function computeBarsElapsed(trade) {
+    const tfMs = D.TF[trade.sourceTf];
+    if (!tfMs) return 0;
+    return Math.floor((Date.now() - trade.openedAt) / tfMs);
+  }
+
+  function closeTrade(trade, outcome, exitPrice) {
+    if (!trade || trade.phase === 'close') return;
+    const r = computeR(trade, exitPrice);
+    trade.phase = 'close';
+    trade.phaseStart = Date.now();
+    trade.outcome = outcome;
+    trade.exitPrice = exitPrice;
+    trade.exitAt = Date.now();
+    trade.rMultiple = r;
+    if (outcome === 'loss') state.lastLossAt = Date.now();
+  }
+
+  function finalizeTrade(symbol) {
+    delete state.activeTrades[symbol];
+  }
+
+  function evaluateTrade(symbol) {
+    const trade = state.activeTrades[symbol];
+    if (!trade) return;
+
+    if (trade.phase === 'entry') {
+      if (Date.now() - trade.phaseStart >= SIGNAL_DISPLAY_MS) {
+        trade.phase = 'hold';
+        trade.phaseStart = Date.now();
+      }
+      return;
+    }
+
+    if (trade.phase === 'hold') {
+      const price = tradePrice(symbol);
+      trade.barsElapsed = computeBarsElapsed(trade);
+
+      if (num(price)) {
+        if (trade.direction === 1) {
+          if (price <= trade.stop) { closeTrade(trade, 'loss', trade.stop); return; }
+          if (price >= trade.target) { closeTrade(trade, 'win', trade.target); return; }
+        } else {
+          if (price >= trade.stop) { closeTrade(trade, 'loss', trade.stop); return; }
+          if (price <= trade.target) { closeTrade(trade, 'win', trade.target); return; }
+        }
+      }
+
+      if (trade.barsElapsed >= MAX_BARS_PER_TRADE && num(price)) {
+        const r = computeR(trade, price);
+        const outcome = r != null && r >= 0 ? 'win' : 'loss';
+        closeTrade(trade, outcome, price);
+        return;
+      }
+      return;
+    }
+
+    if (trade.phase === 'close') {
+      if (Date.now() - trade.phaseStart >= CLOSE_DISPLAY_MS) {
+        finalizeTrade(symbol);
+      }
+    }
+  }
+
+  function updateActiveTrades() {
+    Object.keys(state.activeTrades).forEach(evaluateTrade);
+  }
+
+  function updateSymbolBarPrices() {
+    const bar = $('symbolBar');
+    if (!bar) return;
+    Array.prototype.forEach.call(bar.children, function (b) {
+      const sym = b.dataset.sym;
+      const t = state.ticks[sym];
+      const p = b.querySelector('.sym-price');
+      const c = b.querySelector('.sym-chg');
+      const active = state.activeTrades[sym];
+      if (active) {
+        b.classList.toggle('sym-active-trade', true);
+        if (p && num(active.entry)) p.textContent = fmt(sym, active.entry);
+        if (c) {
+          let rText = '';
+          const price = tradePrice(sym);
+          const r = computeR(active, price);
+          if (r != null) rText = (r >= 0 ? '+' : '') + r.toFixed(2) + 'R';
+          c.textContent = rText || (active.direction === 1 ? '▲ LIVE' : '▼ LIVE');
+          c.className = 'sym-chg ' + (active.direction === 1 ? 'up' : 'down');
+        }
+        return;
+      }
+      b.classList.remove('sym-active-trade');
+      if (!t || !p || !c) return;
+      p.textContent = fmt(sym, t.mid);
+      if (t.dayPct != null && t.state !== 'closed') {
+        c.textContent = sgn(t.dayPct, 2) + '%';
+        c.className = 'sym-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
+      } else { c.textContent = ' '; c.className = 'sym-chg muted'; }
     });
   }
 
@@ -197,6 +342,13 @@
     const reason = $('verdictReason');
     if (!badge || !reason) return;
 
+    const trade = state.activeTrades[state.symbol];
+
+    if (trade) {
+      renderTradeVerdict(trade, badge, reason);
+      return;
+    }
+
     if (!a) {
       badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">◷</span><span class="verdict-text">ESPERAR</span>';
       badge.className = 'verdict-badge wait';
@@ -207,7 +359,6 @@
     let mainLabel = a.verdictLabel;
     let mainState = a.verdictState;
     let icon = mainState === 'buy' ? '▲' : mainState === 'sell' ? '▼' : '◷';
-    
     if (mainLabel.indexOf('Breakout') !== -1) icon = '🚀';
     else if (mainLabel.indexOf('Reversión') !== -1) icon = '⚡';
     else if (mainLabel.indexOf('Retroceso') !== -1) icon = '🎯';
@@ -218,12 +369,60 @@
     badge.className = 'verdict-badge ' + mainState;
 
     let text = a.verdictReason || '';
-
     if (a.multiTfSignal && mainState === 'wait') {
       text += ' 📊 ' + a.multiTfSignal.summary;
     }
-
     reason.textContent = text.replace(/^ · /, '');
+  }
+
+  function renderTradeVerdict(trade, badge, reason) {
+    const sym = trade.symbol;
+    const price = tradePrice(sym);
+    const r = computeR(trade, price);
+    const dirWord = trade.direction === 1 ? 'COMPRA' : 'VENTA';
+    const icon = trade.direction === 1 ? '▲' : '▼';
+
+    if (trade.phase === 'entry') {
+      badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
+        '<span class="verdict-text">¡' + dirWord + ' AHORA!</span>';
+      badge.className = 'verdict-badge ' + (trade.direction === 1 ? 'buy' : 'sell');
+      reason.textContent = 'Entrada ' + fmt(sym, trade.entry) +
+        ' · Stop ' + fmt(sym, trade.stop) +
+        ' · Target ' + fmt(sym, trade.target) +
+        ' · ' + esc(trade.label);
+      return;
+    }
+
+    if (trade.phase === 'hold') {
+      badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">⏳</span>' +
+        '<span class="verdict-text">MANTENER OPERACIÓN</span>';
+      badge.className = 'verdict-badge ' + (trade.direction === 1 ? 'buy' : 'sell');
+      const rText = r != null ? (r >= 0 ? '+' : '') + r.toFixed(2) + 'R' : '—';
+      const barsText = trade.barsElapsed + '/' + MAX_BARS_PER_TRADE + ' velas';
+      reason.textContent = dirWord + ' abierta · Precio ' + fmt(sym, price) +
+        ' · R flotante ' + rText +
+        ' · ' + barsText +
+        ' · Entrada ' + fmt(sym, trade.entry) +
+        ' · Stop ' + fmt(sym, trade.stop) +
+        ' · Target ' + fmt(sym, trade.target);
+      return;
+    }
+
+    if (trade.phase === 'close') {
+      const isWin = trade.outcome === 'win';
+      const rText = trade.rMultiple != null
+        ? (trade.rMultiple >= 0 ? '+' : '') + trade.rMultiple.toFixed(2) + 'R'
+        : '—';
+      badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + (isWin ? '✅' : '❌') + '</span>' +
+        '<span class="verdict-text">CIERRA AHORA · ' + rText + '</span>';
+      badge.className = 'verdict-badge ' + (isWin ? 'buy' : 'sell');
+      const exit = fmt(sym, trade.exitPrice);
+      reason.textContent = (isWin ? 'Target alcanzado' : 'Stop alcanzado') +
+        ' · Salida ' + exit +
+        ' · Resultado ' + rText +
+        ' · Duración ' + trade.barsElapsed + ' velas.';
+      return;
+    }
   }
 
   function renderSMC() {
@@ -244,7 +443,6 @@
 
     scoreEl.textContent = smc.score.toFixed(0) + '%';
     barEl.style.width = smc.score + '%';
-
     if (smc.score >= 80) { barEl.style.backgroundColor = 'var(--up)'; scoreEl.style.color = 'var(--up)'; }
     else if (smc.score >= 50) { barEl.style.backgroundColor = 'var(--warn)'; scoreEl.style.color = 'var(--warn)'; }
     else { barEl.style.backgroundColor = 'var(--down)'; scoreEl.style.color = 'var(--down)'; }
@@ -256,7 +454,6 @@
       mss: 'Estructura', sweep: 'Sweep', fvg: 'FVG', ob: 'Order Block',
       ote: 'OTE', htfBias: 'Sesgo HTF', penalty: 'Penalización', vetoed: 'Veto'
     };
-
     order.forEach(function (key) {
       const e = bd[key];
       if (!e || !e.weighted) return;
@@ -264,19 +461,15 @@
       lines.push('<li>' + esc(names[key] || key) + ': ' + sign + Math.abs(e.weighted).toFixed(1) +
         (e.reason ? ' — ' + esc(e.reason) : '') + '</li>');
     });
-
     if (lines.length === 0) lines.push('<li class="muted">Sin componentes ponderados.</li>');
-
     if (smc.vetoes && smc.vetoes.length) {
       smc.vetoes.forEach(function (v) { lines.push('<li style="color: var(--warn)">⚠ ' + esc(v) + '</li>'); });
     }
-
     if (typeof smc.riskMultiplier === 'number' && !smc.vetoed) {
       const pct = Math.round(smc.riskMultiplier * 100);
       const color = pct >= 100 ? 'var(--up)' : pct >= 50 ? 'var(--warn)' : 'var(--down)';
       lines.push('<li style="color: ' + color + '">Riesgo sugerido: ' + pct + '% del máximo.</li>');
     }
-
     reasonsEl.innerHTML = lines.join('');
   }
 
@@ -285,11 +478,9 @@
     const card = $('alertCard');
     const list = $('alertList');
     if (!card || !list) return;
-
     if (!a) { card.hidden = true; list.innerHTML = ''; return; }
     const alerts = a.alerts || [];
     if (alerts.length === 0) { card.hidden = true; list.innerHTML = ''; return; }
-
     card.hidden = false;
     list.innerHTML = alerts.map(function (al) {
       return '<li><strong>[' + esc(al.type.toUpperCase()) + ']</strong> ' + esc(al.text) + '</li>';
@@ -299,7 +490,6 @@
   function renderMetrics() {
     const a = state.analysis;
     if (!a) return;
-
     const tEl = $('macroTrend');
     if (tEl) {
       let txt = a.macroTrend || '—';
@@ -310,7 +500,6 @@
     if (mEl) mEl.textContent = a.macroMomentum || '—';
     const vEl = $('macroVolatility');
     if (vEl) vEl.textContent = a.macroVolatility || '—';
-
     const sEl = $('macroStructure');
     if (sEl) {
       let txt = 'Lateral', cls = 'metric-val';
@@ -367,22 +556,13 @@
       const adx = tfData.adx;
       const rsi = tfData.rsi;
       const strong = tfData.adxStrong || (num(adx) && adx >= 25);
-
       let dirText, dirClass;
-      if (dir === 1) {
-        dirText = strong ? 'Alcista ★' : 'Alcista';
-        dirClass = 'lab buy';
-      } else if (dir === -1) {
-        dirText = strong ? 'Bajista ★' : 'Bajista';
-        dirClass = 'lab sell';
-      } else {
-        dirText = 'Lateral';
-        dirClass = 'lab neutral';
-      }
+      if (dir === 1) { dirText = strong ? 'Alcista ★' : 'Alcista'; dirClass = 'lab buy'; }
+      else if (dir === -1) { dirText = strong ? 'Bajista ★' : 'Bajista'; dirClass = 'lab sell'; }
+      else { dirText = 'Lateral'; dirClass = 'lab neutral'; }
       lab.textContent = dirText;
       lab.className = dirClass;
       lab.title = tfData.degraded ? 'EMA degradada (historial corto)' : '';
-
       if (meta) {
         const parts = [];
         if (num(adx)) parts.push('ADX ' + adx.toFixed(0));
@@ -396,6 +576,33 @@
     const a = state.analysis;
     const el = $('conclusionText');
     if (!el) return;
+    const trade = state.activeTrades[state.symbol];
+    if (trade) {
+      const price = tradePrice(state.symbol);
+      const r = computeR(trade, price);
+      if (trade.phase === 'entry') {
+        el.textContent = 'Trade abierto: ' + (trade.direction === 1 ? 'COMPRA' : 'VENTA') +
+          ' · Entrada ' + fmt(state.symbol, trade.entry) +
+          ' · Stop ' + fmt(state.symbol, trade.stop) +
+          ' · Target ' + fmt(state.symbol, trade.target);
+        return;
+      }
+      if (trade.phase === 'hold') {
+        const rText = r != null ? (r >= 0 ? '+' : '') + r.toFixed(2) + 'R' : '—';
+        el.textContent = 'Trade en curso: ' + (trade.direction === 1 ? 'COMPRA' : 'VENTA') +
+          ' · R flotante ' + rText +
+          ' · Velas ' + trade.barsElapsed + '/' + MAX_BARS_PER_TRADE +
+          ' · Stop ' + fmt(state.symbol, trade.stop) +
+          ' · Target ' + fmt(state.symbol, trade.target);
+        return;
+      }
+      if (trade.phase === 'close') {
+        el.textContent = 'Trade cerrado: ' + (trade.outcome === 'win' ? 'GANANCIA' : 'PÉRDIDA') +
+          ' · R ' + (trade.rMultiple != null ? trade.rMultiple.toFixed(2) : '—') +
+          ' · Salida ' + fmt(state.symbol, trade.exitPrice);
+        return;
+      }
+    }
     el.textContent = a ? a.conclusion : 'Esperando datos suficientes para generar un veredicto...';
   }
 
@@ -411,15 +618,21 @@
 
   function computeRenderHash() {
     const a = state.analysis;
-    if (!a) return 'none';
+    const trade = state.activeTrades[state.symbol];
+    const tradeHash = trade
+      ? [trade.phase, trade.outcome || '', trade.barsElapsed,
+         Math.round((computeR(trade, tradePrice(state.symbol)) || 0) * 100)].join('|')
+      : 'none';
+    if (!a && !trade) return 'none';
     return [
-      state.symbol, state.tf,
-      a.verdictState, a.consensusLabel,
-      Math.round(a.consensusScore || 0), Math.round(a.confidence || 0),
+      state.symbol, state.tf, tradeHash,
+      a ? a.verdictState : '', a ? a.consensusLabel : '',
+      a ? Math.round(a.consensusScore || 0) : 0,
+      a ? Math.round(a.confidence || 0) : 0,
       state.smcResult ? Math.round(state.smcResult.score || 0) : 0,
       state.smcResult ? state.smcResult.grade || '' : '',
-      (a.alerts || []).length,
-      a.multiTfSignal ? a.multiTfSignal.action + ':' + a.multiTfSignal.strength : '',
+      (a && a.alerts ? a.alerts.length : 0),
+      a && a.multiTfSignal ? a.multiTfSignal.action + ':' + a.multiTfSignal.strength : '',
       state.feedMode
     ].join('|');
   }
@@ -429,6 +642,7 @@
     if (!force && hash === state.lastRenderHash) {
       renderPrice();
       renderChart();
+      updateSymbolBarPrices();
       return;
     }
     state.lastRenderHash = hash;
@@ -443,10 +657,12 @@
     renderMtf();
     renderConclusion();
     renderChart();
+    updateSymbolBarPrices();
   }
 
-  function currentEntryPrice() {
-    const t = state.ticks[state.symbol];
+  function currentEntryPrice(symbol) {
+    const sym = symbol || state.symbol;
+    const t = state.ticks[sym];
     if (t && Number.isFinite(t.mid)) return t.mid;
     const bars = state.bars[state.tf];
     return bars && bars.length ? bars[bars.length - 1].c : null;
@@ -473,7 +689,6 @@
     const t = state.ticks[state.symbol];
     const entryTf = analysis.entryTf || state.tf;
     const entryBars = state.bars[entryTf] || [];
-
     const entrySnapshot = cleanBarsForSnapshot(entryBars).slice(-SNAPSHOT_BARS_ENTRY);
 
     const higherTfs = {};
@@ -607,14 +822,15 @@
     state.signalsThisSession++;
   }
 
-  function logSignalIfChanged(analysis) {
+  function maybeEmitSignal(analysis) {
     if (!analysis) return;
+    if (ONE_SIGNAL_PER_SYMBOL && state.activeTrades[state.symbol]) return;
+
     const curr = analysis.verdictState;
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
 
     const effectiveDir = curr === 'buy' ? 1 : -1;
     const score = analysis.consensusScore || 0;
-    
     if (!canEmitSignal(effectiveDir, score)) return;
 
     const now = Date.now();
@@ -623,8 +839,15 @@
     if (key === state.lastSignalKey && (now - state.lastSignalAt) < maxAge) return;
     if (key !== state.lastSignalKey && (now - state.lastSignalAt) < 3000) return;
 
-    const entryPrice = currentEntryPrice();
+    const entryPrice = currentEntryPrice(state.symbol);
     if (entryPrice == null) return;
+    if (!analysis.verdictRisk) return;
+
+    const stop = analysis.verdictRisk.stop;
+    const target = analysis.verdictRisk.target;
+    if (!num(stop) || !num(target)) return;
+
+    openTrade(state.symbol, effectiveDir, entryPrice, stop, target, analysis.verdictLabel, analysis.entryTf || state.tf);
 
     state.signalLog.push({
       ts: now,
@@ -632,9 +855,9 @@
       tf: analysis.entryTf,
       direction: effectiveDir,
       entryPrice,
-      stopPrice: analysis.verdictRisk ? analysis.verdictRisk.stop : null,
-      targetPrice: analysis.verdictRisk ? analysis.verdictRisk.target : null,
-      rr: analysis.verdictRisk ? analysis.verdictRisk.rr : null,
+      stopPrice: stop,
+      targetPrice: target,
+      rr: analysis.verdictRisk.rr,
       score: score,
       confidence: analysis.confidence
     });
@@ -643,9 +866,7 @@
     if (J && typeof J.record === 'function') {
       try {
         const snap = buildSignalSnapshot(analysis, entryPrice, effectiveDir);
-        J.record(snap).then(function () {
-          renderJournal();
-        }).catch(function (e) {
+        J.record(snap).then(function () { renderJournal(); }).catch(function (e) {
           console.warn('[app] journal.record falló:', e);
         });
       } catch (e) {
@@ -677,7 +898,6 @@
     state.gapRefill[tf] = true;
     const myId = state.requestId;
     const gapRef = state.gapRefill;
-
     D.fetchBars(state.symbol, tf, BAR_LIMIT).then(function (bars) {
       if (state.requestId !== myId || !bars || !bars.length) return;
       state.bars[tf] = bars;
@@ -694,10 +914,16 @@
     if (!tick || !tick.symbol) return;
     state.ticks[tick.symbol] = tick;
 
-    if (tick.symbol !== state.symbol) { updateSymbolBarPrices(); return; }
+    if (tick.symbol !== state.symbol) {
+      updateActiveTrades();
+      updateSymbolBarPrices();
+      scheduleRender();
+      return;
+    }
     if (tick.stale) return;
 
     updateBarsFromTick(tick);
+    updateActiveTrades();
     updateSymbolBarPrices();
     scheduleRender();
   }
@@ -749,7 +975,7 @@
       state.cycleErrorCount++;
     }
 
-    logSignalIfChanged(res);
+    maybeEmitSignal(res);
   }
 
   function updateJournalOutcomes() {
@@ -775,8 +1001,10 @@
     try { runAnalysisStep(); }
     catch (e) { console.error('[app] masterCycle análisis excepción:', e); }
 
-    updateJournalOutcomes();
+    try { updateActiveTrades(); }
+    catch (e) { console.error('[app] updateActiveTrades excepción:', e); }
 
+    updateJournalOutcomes();
     scheduleRender();
 
     state.lastAnalysisAt = Date.now();
@@ -786,7 +1014,10 @@
   function priceCheckCycle() {
     if (loop.stopped) return;
     state.lastPriceCheckAt = Date.now();
-    try { renderPrice(); }
+    try {
+      updateActiveTrades();
+      renderPrice();
+    }
     catch (e) { console.error('[app] priceCheckCycle excepción:', e); }
   }
 
@@ -854,14 +1085,8 @@
     state.smcResult = null;
     state.lastSignalKey = '';
     state.lastSignalAt = 0;
-    state.lastSignalByDir = { '1': 0, '-1': 0 };
-    state.signalsThisHour = 0;
-    state.signalsThisSession = 0;
-    state.hourStart = Date.now();
-    state.sessionStart = Date.now();
     state.gapRefill = {};
     state.lastRenderHash = '';
-    state.lastOutcomeUpdateAt = 0;
     delete state.ticks[old];
 
     if (typeof A.invalidateCache === 'function') A.invalidateCache();
@@ -894,23 +1119,6 @@
       b.innerHTML = '<span class="sym-name">' + esc(sym) + '</span><span class="sym-price">—</span><span class="sym-chg muted">&nbsp;</span>';
       b.addEventListener('click', function () { selectSymbol(sym); });
       bar.appendChild(b);
-    });
-  }
-
-  function updateSymbolBarPrices() {
-    const bar = $('symbolBar');
-    if (!bar) return;
-    Array.prototype.forEach.call(bar.children, function (b) {
-      const sym = b.dataset.sym;
-      const t = state.ticks[sym];
-      const p = b.querySelector('.sym-price');
-      const c = b.querySelector('.sym-chg');
-      if (!t || !p || !c) return;
-      p.textContent = fmt(sym, t.mid);
-      if (t.dayPct != null && t.state !== 'closed') {
-        c.textContent = sgn(t.dayPct, 2) + '%';
-        c.className = 'sym-chg ' + (t.dayPct >= 0 ? 'up' : 'down');
-      } else { c.textContent = ' '; c.className = 'sym-chg muted'; }
     });
   }
 
@@ -1087,14 +1295,12 @@
 
   function renderJournal() {
     if (!J) return;
-
     const storage = $('journalStorage');
     if (storage) {
       const fallback = J.isFallback && J.isFallback();
       storage.textContent = fallback ? 'localStorage' : 'IndexedDB';
       storage.className = 'journal-storage muted small' + (fallback ? ' fallback' : '');
     }
-
     J.stats().then(function (s) {
       setText('jTotal', String(s.total));
       setText('jWins', String(s.wins), 'journal-stat-val up');
@@ -1104,9 +1310,7 @@
       setText('jExpectancy', s.closed > 0 ? (s.expectancyR >= 0 ? '+' : '') + s.expectancyR.toFixed(2) + 'R' : '—');
       const pf = s.profitFactor;
       setText('jProfitFactor', !isFinite(pf) ? (pf === Infinity ? '∞' : '—') : pf.toFixed(2));
-    }).catch(function (e) {
-      console.warn('[app] journal.stats falló:', e);
-    });
+    }).catch(function (e) { console.warn('[app] journal.stats falló:', e); });
   }
 
   function journalFeedback(msg, kind) {
@@ -1122,14 +1326,9 @@
   }
 
   function initJournal() {
-    if (!J) {
-      console.warn('[app] journal no disponible');
-      return;
-    }
-
+    if (!J) { console.warn('[app] journal no disponible'); return; }
     J.init().then(function () {
       renderJournal();
-
       const btnJSON = $('journalExportJSON');
       const btnCSV = $('journalExportCSV');
       const btnClear = $('journalClear');
@@ -1139,25 +1338,19 @@
           btnJSON.disabled = true;
           J.exportJSON().then(function (n) {
             journalFeedback(n + ' señales exportadas (JSON)', 'ok');
-          }).catch(function (e) {
-            journalFeedback('Error al exportar', 'bad');
-            console.warn(e);
-          }).then(function () { btnJSON.disabled = false; });
+          }).catch(function (e) { journalFeedback('Error al exportar', 'bad'); console.warn(e); })
+            .then(function () { btnJSON.disabled = false; });
         });
       }
-
       if (btnCSV) {
         btnCSV.addEventListener('click', function () {
           btnCSV.disabled = true;
           J.exportCSV().then(function (n) {
             journalFeedback(n + ' señales exportadas (CSV)', 'ok');
-          }).catch(function (e) {
-            journalFeedback('Error al exportar', 'bad');
-            console.warn(e);
-          }).then(function () { btnCSV.disabled = false; });
+          }).catch(function (e) { journalFeedback('Error al exportar', 'bad'); console.warn(e); })
+            .then(function () { btnCSV.disabled = false; });
         });
       }
-
       if (btnClear) {
         btnClear.addEventListener('click', function () {
           if (!confirm('¿Borrar todo el historial de señales? Esta acción no se puede deshacer.')) return;
@@ -1165,15 +1358,11 @@
           J.clear().then(function () {
             journalFeedback('Historial borrado', 'ok');
             renderJournal();
-          }).catch(function (e) {
-            journalFeedback('Error al borrar', 'bad');
-            console.warn(e);
-          }).then(function () { btnClear.disabled = false; });
+          }).catch(function (e) { journalFeedback('Error al borrar', 'bad'); console.warn(e); })
+            .then(function () { btnClear.disabled = false; });
         });
       }
-    }).catch(function (e) {
-      console.error('[app] journal.init falló:', e);
-    });
+    }).catch(function (e) { console.error('[app] journal.init falló:', e); });
   }
 
   function startFeed() {
@@ -1197,19 +1386,16 @@
   function auditSignals() {
     const log = state.signalLog.slice();
     let wins = 0, losses = 0, open = 0, invalid = 0, sumRWin = 0, sumRLoss = 0;
-
     log.forEach(function (s) {
       if (s.entryPrice == null || s.stopPrice == null || s.targetPrice == null) { invalid++; return; }
       const bars = state.bars[s.tf];
       if (!bars || !bars.length) { invalid++; return; }
       const after = bars.filter(function (b) { return b.t > s.ts; });
       if (!after.length) { open++; return; }
-
       const risk = Math.abs(s.entryPrice - s.stopPrice);
       if (!(risk > 0)) { invalid++; return; }
       const reward = Math.abs(s.targetPrice - s.entryPrice);
       const rrReal = reward / risk;
-
       let hitT = false, hitS = false;
       for (let i = 0; i < after.length; i++) {
         const b = after[i];
@@ -1221,19 +1407,16 @@
           if (b.l <= s.targetPrice) { hitT = true; break; }
         }
       }
-
       if (hitT) { wins++; sumRWin += rrReal; }
       else if (hitS) { losses++; sumRLoss += 1; }
       else open++;
     });
-
     const closed = wins + losses;
     const winRate = closed > 0 ? (wins / closed) * 100 : 0;
     const avgWinR = wins > 0 ? sumRWin / wins : 0;
     const avgLossR = losses > 0 ? sumRLoss / losses : 0;
     const expectancyR = closed > 0 ? (wins / closed) * avgWinR - (losses / closed) * avgLossR : 0;
     const profitFactor = sumRLoss > 0 ? (sumRWin / sumRLoss) : (sumRWin > 0 ? Infinity : 0);
-
     return { total: log.length, closed, wins, losses, open, invalid, winRate, avgWinR, avgLossR, expectancyR, profitFactor };
   }
 
@@ -1277,6 +1460,7 @@
   AT.app = {
     getSignalLog: function () { return state.signalLog.slice(); },
     getState: function () { return state; },
+    getActiveTrades: function () { return Object.assign({}, state.activeTrades); },
     auditSignals,
     getLoopStats: function () {
       return {
@@ -1289,7 +1473,8 @@
         lastOutcomeUpdateAt: state.lastOutcomeUpdateAt,
         signalsThisHour: state.signalsThisHour,
         signalsThisSession: state.signalsThisSession,
-        lastSignalByDir: state.lastSignalByDir
+        lastSignalByDir: state.lastSignalByDir,
+        activeTrades: Object.keys(state.activeTrades).length
       };
     }
   };
