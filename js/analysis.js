@@ -466,25 +466,6 @@
       }
     }
 
-    if (!type) {
-      const lookback = cfgBr.lookbackSwings || 5;
-      let highest = -Infinity, lowest = Infinity;
-      for (let i = bars.length - 1 - lookback; i < bars.length - 1; i++) {
-        if (bars[i].h > highest) highest = bars[i].h;
-        if (bars[i].l < lowest) lowest = bars[i].l;
-      }
-      
-      if (currentPrice > highest + atr * 0.1) {
-        type = 'buy';
-        score = 70;
-        reasons.push('Ruptura de máximo');
-      } else if (currentPrice < lowest - atr * 0.1) {
-        type = 'sell';
-        score = 70;
-        reasons.push('Ruptura de mínimo');
-      }
-    }
-
     if (type && score >= (cfgBr.minScore || 70)) {
       return { type, score, reasons };
     }
@@ -492,7 +473,6 @@
   }
 
   function detectStructureShift(bars, atr, currentPrice) {
-    const cfgRev = cfg().reversal || {};
     if (bars.length < 15) return null;
 
     const lookback = 10;
@@ -729,36 +709,57 @@
 
     if (ctx.structureShift) {
       const dir = ctx.structureShift.type === 'buy' ? 1 : -1;
+      if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Cambio de estructura contra sesgo principal. Esperando alineación.' };
+      }
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      if (!risk || !risk.valid) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Estructura rota pero R:R insuficiente.' };
+      }
       const isBuy = dir === 1;
       return {
         state: isBuy ? 'buy' : 'sell',
         label: isBuy ? '¡COMPRAR AHORA! (Cambio de Tendencia)' : '¡VENDER AHORA! (Cambio de Tendencia)',
-        reason: 'Estructura rota: ' + ctx.structureShift.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        reason: 'Estructura rota: ' + ctx.structureShift.reasons.join(', ') + '. R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target),
         risk: risk
       };
     }
 
     if (ctx.breakout) {
       const dir = ctx.breakout.type === 'buy' ? 1 : -1;
+      if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Breakout contra el sesgo multi-TF. Se requiere alineación para operar.' };
+      }
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      if (!risk || !risk.valid) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Breakout detectado pero R:R insuficiente.' };
+      }
       const isBuy = dir === 1;
       return {
         state: isBuy ? 'buy' : 'sell',
         label: isBuy ? '¡COMPRAR AHORA! (Breakout)' : '¡VENDER AHORA! (Breakout)',
-        reason: 'Movimiento de fuerza: ' + ctx.breakout.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        reason: 'Movimiento de fuerza: ' + ctx.breakout.reasons.join(', ') + '. R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target),
         risk: risk
       };
     }
 
     if (ctx.reversal) {
       const dir = ctx.reversal.type === 'buy' ? 1 : -1;
+      if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
+        // Permitimos reversión contra tendencia solo si es muy fuerte
+        if (ctx.reversal.score < 85) {
+          return { state: 'wait', label: 'ESPERAR', reason: 'Reversión contra tendencia pero no es lo suficientemente fuerte.' };
+        }
+      }
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      if (!risk || !risk.valid) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Setup de reversión con R:R insuficiente.' };
+      }
       const isBuy = dir === 1;
       return {
         state: isBuy ? 'buy' : 'sell',
         label: isBuy ? '¡COMPRAR AHORA! (Reversión)' : '¡VENDER AHORA! (Reversión)',
-        reason: 'Setup de reversión: ' + ctx.reversal.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        reason: 'Setup de reversión: ' + ctx.reversal.reasons.join(', ') + '. R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target),
         risk: risk
       };
     }
@@ -774,11 +775,14 @@
     if (ctx.continuation) {
       const dir = ctx.continuation.type === 'buy' ? 1 : -1;
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      if (!risk || !risk.valid) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Retroceso detectado pero R:R insuficiente.' };
+      }
       const isBuy = dir === 1;
       return {
         state: isBuy ? 'buy' : 'sell',
         label: isBuy ? 'COMPRAR (Retroceso)' : 'VENDER (Retroceso)',
-        reason: 'Retroceso a zona de valor: ' + ctx.continuation.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        reason: 'Retroceso a zona de valor: ' + ctx.continuation.reasons.join(', ') + '. R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target),
         risk: risk
       };
     }

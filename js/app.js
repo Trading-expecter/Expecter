@@ -211,6 +211,7 @@
     if (mainLabel.indexOf('Breakout') !== -1) icon = '🚀';
     else if (mainLabel.indexOf('Reversión') !== -1) icon = '⚡';
     else if (mainLabel.indexOf('Retroceso') !== -1) icon = '🎯';
+    else if (mainLabel.indexOf('Cambio de Tendencia') !== -1) icon = '🔄';
 
     badge.innerHTML = '<span class="verdict-icon" aria-hidden="true">' + icon + '</span>' +
       '<span class="verdict-text">' + esc(mainLabel) + '</span>';
@@ -453,8 +454,8 @@
 
   function makeSignalKey(analysis) {
     return [
-      state.symbol, analysis.entryTf, analysis.overallDirection,
-      analysis.verdictState, analysis.verdictLabel,
+      state.symbol, analysis.entryTf, analysis.verdictState,
+      analysis.verdictLabel,
       Math.round((analysis.consensusScore || 0) / 10)
     ].join('::');
   }
@@ -468,7 +469,7 @@
     });
   }
 
-  function buildSignalSnapshot(analysis, entryPrice) {
+  function buildSignalSnapshot(analysis, entryPrice, effectiveDir) {
     const t = state.ticks[state.symbol];
     const entryTf = analysis.entryTf || state.tf;
     const entryBars = state.bars[entryTf] || [];
@@ -502,8 +503,8 @@
       symbol: state.symbol,
       tf: state.tf,
       entryTf: entryTf,
-      direction: analysis.overallDirection,
-      action: analysis.overallDirection === 1 ? 'buy' : analysis.overallDirection === -1 ? 'sell' : 'wait',
+      direction: effectiveDir,
+      action: effectiveDir === 1 ? 'buy' : 'sell',
       verdict: {
         state: analysis.verdictState,
         label: analysis.verdictLabel,
@@ -611,14 +612,9 @@
     const curr = analysis.verdictState;
     if (curr !== 'buy' && curr !== 'sell') { state.lastSignalKey = ''; return; }
 
-    let effectiveDir = analysis.overallDirection;
-    if (effectiveDir === 0 && analysis.verdictState !== 'wait') {
-      effectiveDir = analysis.verdictState === 'buy' ? 1 : -1;
-    }
-    
-    if (effectiveDir !== 1 && effectiveDir !== -1) return;
-
+    const effectiveDir = curr === 'buy' ? 1 : -1;
     const score = analysis.consensusScore || 0;
+    
     if (!canEmitSignal(effectiveDir, score)) return;
 
     const now = Date.now();
@@ -646,9 +642,7 @@
 
     if (J && typeof J.record === 'function') {
       try {
-        const snap = buildSignalSnapshot(analysis, entryPrice);
-        snap.direction = effectiveDir;
-        snap.action = effectiveDir === 1 ? 'buy' : 'sell';
+        const snap = buildSignalSnapshot(analysis, entryPrice, effectiveDir);
         J.record(snap).then(function () {
           renderJournal();
         }).catch(function (e) {

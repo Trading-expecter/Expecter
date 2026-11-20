@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '6.1.0-scalping-momentum',
+  version: '6.2.0-scalping-final',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
