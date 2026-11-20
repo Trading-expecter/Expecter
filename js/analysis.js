@@ -491,6 +491,32 @@
     return null;
   }
 
+  function detectStructureShift(bars, atr, currentPrice) {
+    const cfgRev = cfg().reversal || {};
+    if (bars.length < 15) return null;
+
+    const lookback = 10;
+    let localMin = Infinity, localMax = -Infinity;
+    let minIdx = -1, maxIdx = -1;
+
+    for (let i = bars.length - lookback; i < bars.length - 1; i++) {
+      if (bars[i].l < localMin) { localMin = bars[i].l; minIdx = i; }
+      if (bars[i].h > localMax) { localMax = bars[i].h; maxIdx = i; }
+    }
+
+    const last = bars[bars.length - 1];
+
+    if (maxIdx > minIdx && last.c > localMax && currentPrice >= last.c) {
+      return { type: 'buy', score: 75, reasons: ['Ruptura de estructura (CHoCH) alcista'] };
+    }
+    
+    if (minIdx > maxIdx && last.c < localMin && currentPrice <= last.c) {
+      return { type: 'sell', score: 75, reasons: ['Ruptura de estructura (CHoCH) bajista'] };
+    }
+
+    return null;
+  }
+
   function detectReversalSetup(bars, levels, atr, currentPrice, rsiVal) {
     const cfgRev = cfg().reversal || {};
     if (cfgRev.enabled === false) return null;
@@ -701,6 +727,18 @@
     const digits = (cfg().symbols && cfg().symbols[ctx.symbol] && cfg().symbols[ctx.symbol].digits) || 2;
     const fmt = function (p) { return num(p) ? p.toFixed(digits) : '—'; };
 
+    if (ctx.structureShift) {
+      const dir = ctx.structureShift.type === 'buy' ? 1 : -1;
+      const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
+      const isBuy = dir === 1;
+      return {
+        state: isBuy ? 'buy' : 'sell',
+        label: isBuy ? '¡COMPRAR AHORA! (Cambio de Tendencia)' : '¡VENDER AHORA! (Cambio de Tendencia)',
+        reason: 'Estructura rota: ' + ctx.structureShift.reasons.join(', ') + '.' + (risk ? ' R:R ' + risk.rr.toFixed(2) + ':1 · Stop ' + fmt(risk.stop) + ' · Target ' + fmt(risk.target) : ''),
+        risk: risk
+      };
+    }
+
     if (ctx.breakout) {
       const dir = ctx.breakout.type === 'buy' ? 1 : -1;
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
@@ -729,7 +767,7 @@
       return {
         state: 'wait',
         label: 'ESPERAR (Agotamiento)',
-        reason: 'Tendencia agotada (RSI extremo o ADX cayendo). No perseguir el precio. Esperando divergencia/sweep para reversión o ruptura de fuerza.'
+        reason: 'Tendencia agotada (RSI extremo o ADX cayendo). No perseguir el precio. Esperando divergencia/sweep o cambio de estructura.'
       };
     }
 
@@ -876,14 +914,19 @@
 
     const exhausted = isExhausted(rsiVal, adxVal, adxPrev);
 
+    let structureShiftSetup = null;
+    let breakoutSetup = null;
     let reversalSetup = null;
     let continuationSetup = null;
-    let breakoutSetup = null;
 
     if (entryBars && entryBars.length > 20) {
-      breakoutSetup = detectBreakoutSetup(entryBars, atrVal, currentPrice);
+      structureShiftSetup = detectStructureShift(entryBars, atrVal, currentPrice);
       
-      if (!breakoutSetup) {
+      if (!structureShiftSetup) {
+        breakoutSetup = detectBreakoutSetup(entryBars, atrVal, currentPrice);
+      }
+      
+      if (!structureShiftSetup && !breakoutSetup) {
         reversalSetup = detectReversalSetup(entryBars, levels, atrVal, currentPrice, rsiVal);
         if (!reversalSetup && !exhausted) {
           continuationSetup = detectContinuationSetup(entryBars, overallDirection, atrVal, currentPrice, vwapBias);
@@ -909,9 +952,10 @@
       atr: atrVal,
       levels: levels,
       isExhausted: exhausted,
+      structureShift: structureShiftSetup,
+      breakout: breakoutSetup,
       reversal: reversalSetup,
       continuation: continuationSetup,
-      breakout: breakoutSetup,
       symbol: symbol
     });
 
