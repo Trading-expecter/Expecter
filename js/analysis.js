@@ -568,9 +568,9 @@
 
   function suggestRisk(entry, support, resistance, atr, direction) {
     const riskCfg = cfg().risk || {};
-    const stopMult = riskCfg.atrStopMult || 1.5;
-    const targetMult = riskCfg.atrTargetMult || 2.0;
-    const minRR = riskCfg.minRR || 1.3;
+    const stopMult = riskCfg.atrStopMult || 2.5;
+    const targetMult = riskCfg.atrTargetMult || 5.0;
+    const minRR = riskCfg.minRR || 1.5;
     if (!num(entry) || !num(atr) || atr <= 0) return null;
 
     let stop, target;
@@ -709,9 +709,18 @@
 
     if (ctx.structureShift) {
       const dir = ctx.structureShift.type === 'buy' ? 1 : -1;
+      
+      if (dir === 1 && ctx.rsiVal > 75) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Ruptura alcista pero RSI en sobrecompra extrema. Evitando comprar el techo.' };
+      }
+      if (dir === -1 && ctx.rsiVal < 25) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Ruptura bajista pero RSI en sobreventa extrema. Evitando vender el suelo.' };
+      }
+
       if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
         return { state: 'wait', label: 'ESPERAR', reason: 'Cambio de estructura contra sesgo principal. Esperando alineación.' };
       }
+
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
       if (!risk || !risk.valid) {
         return { state: 'wait', label: 'ESPERAR', reason: 'Estructura rota pero R:R insuficiente.' };
@@ -727,9 +736,18 @@
 
     if (ctx.breakout) {
       const dir = ctx.breakout.type === 'buy' ? 1 : -1;
+      
+      if (dir === 1 && ctx.rsiVal > 80) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Vela de impulso alcista pero RSI en sobrecompra extrema.' };
+      }
+      if (dir === -1 && ctx.rsiVal < 20) {
+        return { state: 'wait', label: 'ESPERAR', reason: 'Vela de impulso bajista pero RSI en sobreventa extrema.' };
+      }
+
       if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
         return { state: 'wait', label: 'ESPERAR', reason: 'Breakout contra el sesgo multi-TF. Se requiere alineación para operar.' };
       }
+
       const risk = suggestRisk(ctx.currentPrice, ctx.levels.bestSupport ? ctx.levels.bestSupport.price : null, ctx.levels.bestResistance ? ctx.levels.bestResistance.price : null, ctx.atr, dir);
       if (!risk || !risk.valid) {
         return { state: 'wait', label: 'ESPERAR', reason: 'Breakout detectado pero R:R insuficiente.' };
@@ -746,7 +764,6 @@
     if (ctx.reversal) {
       const dir = ctx.reversal.type === 'buy' ? 1 : -1;
       if (ctx.overallDirection !== 0 && dir !== ctx.overallDirection) {
-        // Permitimos reversión contra tendencia solo si es muy fuerte
         if (ctx.reversal.score < 85) {
           return { state: 'wait', label: 'ESPERAR', reason: 'Reversión contra tendencia pero no es lo suficientemente fuerte.' };
         }
@@ -960,7 +977,8 @@
       breakout: breakoutSetup,
       reversal: reversalSetup,
       continuation: continuationSetup,
-      symbol: symbol
+      symbol: symbol,
+      rsiVal: rsiVal
     });
 
     const conclusionParts = [];
@@ -1049,8 +1067,8 @@
 
     const lastRsi = rsiArr[i];
     const prevRsi = rsiArr[i - 1];
-    const ob = exCfg.rsiOverbought || 85;
-    const os = exCfg.rsiOversold || 15;
+    const ob = exCfg.rsiOverbought || 80;
+    const os = exCfg.rsiOversold || 20;
     if (num(lastRsi) && num(prevRsi)) {
       if (lastRsi > ob && prevRsi <= ob) alerts.push({ type: 'info', text: 'RSI cruza sobrecompra (' + lastRsi.toFixed(1) + ').' });
       else if (lastRsi < os && prevRsi >= os) alerts.push({ type: 'info', text: 'RSI cruza sobreventa (' + lastRsi.toFixed(1) + ').' });

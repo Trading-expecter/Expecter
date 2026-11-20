@@ -1,5 +1,5 @@
 window.AT_CONFIG = {
-  version: '6.2.0-scalping-final',
+  version: '6.3.0-scalping-stoploss-fix',
   base: 'https://biquote.io',
   signalrUrl: 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js',
 
@@ -105,9 +105,9 @@ window.AT_CONFIG = {
 
   risk: {
     atrPeriod: 14,
-    atrStopMult: 1.5,
-    atrTargetMult: 2.0,
-    minRR: 1.3,
+    atrStopMult: 2.5,
+    atrTargetMult: 5.0,
+    minRR: 1.5,
     maxRiskPct: 0.5,
     maxSignalAgeBars: 5,
     maxDailyLossPct: 3.0,
@@ -154,8 +154,8 @@ window.AT_CONFIG = {
 
   exhaustion: {
     rsiPeriod: 14,
-    rsiOverbought: 85,
-    rsiOversold: 15,
+    rsiOverbought: 80,
+    rsiOversold: 20,
     adxDropPct: 25,
     lookbackCandles: 5,
     volumeDropPct: 40,
